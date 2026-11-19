@@ -89,3 +89,30 @@ test('admin management: temp password, last admin cannot leave', async () => {
   assert.equal(del.status, 409);
   assert.equal(del.body.code, 'last_admin');
 });
+
+test('sign in with email or phone number; one phone per account', async () => {
+  await h.customer('an@example.com', 'An', '0901234567');
+  for (const login of ['an@example.com', 'AN@example.com', '0901234567', '+84 901 234 567', '84901234567']) {
+    const res = await h.api.post('auth/login', { login, password: h.PASSWORD });
+    assert.equal(res.status, 200, login);
+    assert.equal(res.body.account.email, 'an@example.com');
+  }
+  assert.equal((await h.api.post('auth/login', { email: '0901234567', password: h.PASSWORD })).status, 200); // old field name still works
+  assert.equal((await h.api.post('auth/login', { login: '0901234567', password: 'sai123456' })).body.code, 'invalid_credentials');
+  assert.equal((await h.api.post('auth/login', { login: '0999999999', password: h.PASSWORD })).body.code, 'invalid_credentials');
+  const badFormat = await h.api.post('auth/login', { login: 'abc', password: h.PASSWORD });
+  assert.equal(badFormat.status, 400);
+  assert.equal(badFormat.body.fields[0].field, 'login');
+
+  const dup = await h.api.post('auth/register', { email: 'other@example.com', password: h.PASSWORD, displayName: 'B', phone: '+84901234567', acceptTerms: true });
+  assert.equal(dup.status, 409);
+  assert.equal(dup.body.code, 'phone_taken');
+  const b = await h.customer('b@example.com', 'B', '0902000222');
+  assert.equal((await h.api.patch('me', { phone: '0901 234 567' }, b.token)).body.code, 'phone_taken');
+  assert.equal(h.expectOk(await h.api.patch('me', { phone: '0903000333' }, b.token)).account.phone, '0903000333');
+
+  const forgot = h.expectOk(await h.api.post('auth/forgot', { login: '0903000333' }), 202);
+  assert.ok(forgot.devToken);
+  h.expectOk(await h.api.post('auth/reset', { token: forgot.devToken, newPassword: 'MatKhauMoi9' }), 204);
+  assert.equal((await h.api.post('auth/login', { login: '0903000333', password: 'MatKhauMoi9' })).status, 200);
+});

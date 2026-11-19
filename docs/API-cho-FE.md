@@ -133,7 +133,7 @@ App **dịch theo `code`**, `message` chỉ là chữ dự phòng theo `Accept-L
 | 403 | `account_suspended` | "Tài khoản đang bị khóa" (có `reason` khi đăng nhập) |
 | 403 | `wrong_password` | Mật khẩu xác nhận sai (đổi mật khẩu, đổi email, xóa tài khoản) |
 | 404 | `not_found` | Bản ghi không còn, hoặc không phải của bạn |
-| 409 | `email_taken`, `duplicate` | Thông báo tương ứng |
+| 409 | `email_taken`, `phone_taken`, `duplicate` | Thông báo tương ứng |
 | 409 | `seat_taken` | "Ghế vừa có người giữ" — body có `takenSeats`, `freeSeats`: tải lại sơ đồ ghế |
 | 409 | `seat_unavailable` | Ghế không bán / đang khóa |
 | 409 | `trip_not_on_sale` | Chuyến hết hạn bán / chưa mở bán (`status` trong body) |
@@ -182,7 +182,7 @@ Danh sách trả `{ "items": [...], "nextCursor": "MjA" | null, "total": 42 }`. 
 { "email": "an@example.com", "password": "matkhau123", "displayName": "Nguyễn Văn An", "phone": "0901234567",
   "acceptTerms": true, "preferredLanguage": "vi", "referralCode": "U4MTLA", "deviceName": "Pixel 8", "deviceId": "<id cài đặt>" }
 ```
-* `email*` (không phân biệt hoa thường), `password*` 8-72 byte có chữ và số, `displayName*` ≤60, `phone*` (server chuẩn hóa `+84 901 234 567` → `0901234567`), `acceptTerms*` = `true`.
+* `email*` (không phân biệt hoa thường), `password*` 8-72 byte có chữ và số, `displayName*` ≤60, `phone*` (server chuẩn hóa `+84 901 234 567` → `0901234567`; **mỗi SĐT chỉ một tài khoản** vì dùng để đăng nhập → trùng: `409 phone_taken`), `acceptTerms*` = `true`.
 * `referralCode` tùy chọn (mã giới thiệu của bạn bè); sai → `400` `fields: [{field:"referralCode", code:"not_found"}]`.
 * Gửi lại cùng `Idempotency-Key` + cùng email/mật khẩu → `200` với cùng tài khoản.
 
@@ -211,7 +211,9 @@ Phản hồi (dùng chung cho đăng ký và đăng nhập):
 * `member` chỉ có ở tài khoản khách hàng (thẻ điểm/hạng đầu Profile). Ảnh đại diện = `initials` trên nền `avatarColor` (không dùng ảnh).
 
 ### 2.3 `POST /v1/auth/login` → `200`
-`{ "email", "password", "deviceName", "deviceId" }` → như 2.2 + `"mustChangePassword": true|false`.
+`{ "login": "an@example.com" | "0901234567", "password", "deviceName", "deviceId" }` → như 2.2 + `"mustChangePassword": true|false`.
+* **`login` = email hoặc số điện thoại**, một ô nhập duy nhất ("Email hoặc số điện thoại"). Có `@` → email (không phân biệt hoa thường); không có → SĐT, server chuẩn hóa `+84 901 234 567`, `84901234567`, `0901.234.567` → `0901234567`. Sai định dạng → `400` `fields: [{field:"login", code:"invalid_format"}]`.
+* Trường cũ `email` vẫn nhận (giá trị cũng có thể là SĐT), nhưng FE mới nên gửi `login`.
 * **Cùng màn hình cho khách và quản trị viên.** `account.role` quyết định giao diện: `customer` → 4 tab khách; `admin` → 5 tab quản trị (vào thẳng Tổng quan).
 * `mustChangePassword: true` (tài khoản quản trị mặc định tạo ở máy chủ, hoặc admin vừa được cấp mật khẩu tạm): chỉ hiện màn hình **đổi mật khẩu**; mọi endpoint khác trả `403 password_change_required` cho tới khi đổi (trừ `GET/PATCH /me`, `/devices`, `/auth/logout`).
 * Sai → `401 invalid_credentials`. Sai 5 lần / 15 phút → `429 too_many_attempts`. Tài khoản bị khóa → `403 account_suspended` (`reason`).
@@ -224,17 +226,17 @@ Phản hồi (dùng chung cho đăng ký và đăng nhập):
 `{ "refreshToken" }`, Bearer tùy chọn. Luôn `204`.
 
 ### 2.6 Quên / đặt lại mật khẩu
-* `POST /v1/auth/forgot` `{ "email" }` → **luôn `202`** `{ "status": "accepted" }` (không lộ email nào có tài khoản). Email chứa mã `ABCD-EFGH`, hạn 30 phút, dùng 1 lần; yêu cầu mã mới thì mã cũ hết hiệu lực; tối đa 3 mã/giờ/email. Môi trường dev chưa có SMTP: phản hồi có thêm `devToken` để test (production không có).
+* `POST /v1/auth/forgot` `{ "login": "<email hoặc SĐT>" }` → **luôn `202`** `{ "status": "accepted" }` (không lộ email nào có tài khoản). Email chứa mã `ABCD-EFGH`, hạn 30 phút, dùng 1 lần; yêu cầu mã mới thì mã cũ hết hiệu lực; tối đa 3 mã/giờ/email hoặc SĐT. Nhập SĐT thì mã vẫn gửi tới **email của tài khoản** đó. Môi trường dev chưa có SMTP: phản hồi có thêm `devToken` để test (production không có).
 * `POST /v1/auth/reset` `{ "token": "ABCD-EFGH", "newPassword" }` → `204`. `token` không phân biệt hoa thường, có hay không dấu gạch. Sai/hết hạn → `400 reset_invalid`. Thành công: **mọi thiết bị bị đăng xuất**, bỏ khóa sai mật khẩu, server gửi email "mật khẩu đã thay đổi".
 
-Luồng: *Quên mật khẩu* (nhập email) → *Nhập mã + mật khẩu mới* (nút "Gửi lại mã" sau 60 giây) → *Đăng nhập* (điền sẵn email).
+Luồng: *Quên mật khẩu* (nhập email hoặc SĐT) → *Nhập mã + mật khẩu mới* (nút "Gửi lại mã" sau 60 giây) → *Đăng nhập* (điền sẵn email).
 
 ### 2.7 🔒 Đổi mật khẩu
 `POST /v1/auth/change-password` `{ "oldPassword", "newPassword" }` → `{ "status": "ok", "revokedSessions": 1, "account": {...} }`. Thiết bị hiện tại giữ phiên, thiết bị khác bị đăng xuất. Trùng mật khẩu cũ → `400 same_as_old`. Xóa cờ `mustChangePassword`.
 
 ### 2.8 🔒 Hồ sơ và xóa tài khoản
 * `GET /v1/me` → `{ account, member?, mustChangePassword }`.
-* `PATCH /v1/me` gửi trường muốn đổi: `displayName`, `phone`, `birthDate` (`yyyy-MM-dd`), `gender` (`male|female|other`), `avatarColor` (`#RRGGBB`), `preferredLanguage` (`vi|en`, lưu theo tài khoản), `email` (**kèm `password`**). Trả như `GET /me`.
+* `PATCH /v1/me` gửi trường muốn đổi: `displayName`, `phone`, `birthDate` (`yyyy-MM-dd`), `gender` (`male|female|other`), `avatarColor` (`#RRGGBB`), `preferredLanguage` (`vi|en`, lưu theo tài khoản), `email` (**kèm `password`**). SĐT đã thuộc tài khoản khác → `409 phone_taken`. Trả như `GET /me`.
 * `DELETE /v1/me` `{ "password" }` → `204`.
   * Khách hàng: bị chặn `409 has_active_orders` (`activeBookings`, `activeParcels`, `pendingRefunds`) khi còn chuyến chưa hoàn thành, đơn gửi đồ đang xử lý hoặc hoàn tiền đang chờ. Xóa thật: tài khoản, dữ liệu lưu sẵn, **ảnh chứng từ**, tin nhắn, đánh giá, điểm, mã; đơn cũ chỉ còn số tiền (không tên/SĐT/địa chỉ).
   * Quản trị viên cuối cùng không xóa được (`409 last_admin`).

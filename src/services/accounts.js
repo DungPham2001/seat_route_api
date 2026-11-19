@@ -91,6 +91,7 @@ async function register(body, { lang, idempotencyKey: headerKey }) {
     }
   }
   if (await Account.exists({ email })) throw conflict('email_taken');
+  await assertPhoneFree(phone);
 
   let referrer = null;
   if (referralCode) {
@@ -118,15 +119,36 @@ async function register(body, { lang, idempotencyKey: headerKey }) {
       if (idemKey) await Receipt.create([{ _id: `register|${sha256(idemKey)}`, result: { accountId: doc._id }, expireAt: new Date(Date.now() + 86400000) }], { session });
     });
   } catch (err) {
-    if (err.code === 11000) throw conflict('email_taken');
+    if (err.code === 11000) throw dupError(err);
     throw err;
   }
   return { status: 201, body: { ...(await profile(doc)), tokens: await tokens.openSession(doc, device) } };
 }
 
-async function checkCredentials(email, plain) {
-  const account = await Account.findOne({ email }).lean();
-  const lockKey = account ? account._id : `email:${email}`;
+/**
+ * Sign-in identifier: email or phone number, in `login` (or the older `email` field).
+ * Contains "@" -> email (case-insensitive), otherwise a Vietnamese phone number normalized to 0xxxxxxxxx.
+ */
+function readLogin(c, body) {
+  const key = body?.login !== undefined ? 'login' : 'email';
+  const raw = c.str(body, key, { required: true, max: 254 });
+  if (typeof raw !== 'string') return null;
+  if (raw.includes('@')) return c.email({ [key]: raw }, key);
+  const phone = normalizePhone(raw);
+  if (!phone) return c.fail(key, 'invalid_format');
+  return phone;
+}
+const loginFilter = (id) => (id.includes('@') ? { email: id } : { phone: id });
+
+/** Phone numbers are a sign-in identifier, so one number belongs to one account. */
+async function assertPhoneFree(phone, exceptId) {
+  if (phone && (await Account.exists({ phone, ...(exceptId ? { _id: { $ne: exceptId } } : {}) }))) throw conflict('phone_taken');
+}
+const dupError = (err) => conflict(err.keyPattern?.phone || /phone/.test(err.message || '') ? 'phone_taken' : 'email_taken');
+
+async function checkCredentials(id, plain) {
+  const account = await Account.findOne(loginFilter(id)).lean();
+  const lockKey = account ? account._id : `login:${id}`;
   await attempts.assertNotLocked('login', lockKey);
   if (!(await password.verify(plain, account?.passwordHash))) {
     await attempts.recordFailure('login', lockKey);
@@ -136,14 +158,14 @@ async function checkCredentials(email, plain) {
   return account;
 }
 
-/** POST /v1/auth/login { email, password, deviceName, deviceId } — same screen for customers and admins. */
+/** POST /v1/auth/login { login (email or phone), password, deviceName, deviceId } — same screen for customers and admins. */
 async function login(body) {
   const c = new Checker();
-  const email = c.email(body, 'email', { required: true });
+  const id = readLogin(c, body);
   const plain = c.secret(body, 'password');
   const device = deviceOf(c, body);
   c.done();
-  const account = await checkCredentials(email, plain);
+  const account = await checkCredentials(id, plain);
   if (account.status === 'suspended') throw new AppError(403, 'account_suspended', { reason: account.suspendReason || null });
   Account.updateOne({ _id: account._id }, { $set: { lastLoginAt: new Date() } }).catch(() => {});
   const t = await tokens.openSession(account, device);
@@ -173,15 +195,15 @@ async function logout(body, auth) {
 
 // ---------- password ----------
 
-/** POST /v1/auth/forgot — always 202 (does not reveal whether the email exists). */
+/** POST /v1/auth/forgot { login (email or phone) } — always 202 (does not reveal whether the account exists). The code goes to the account's email. */
 async function forgot(body, { lang }) {
   const c = new Checker();
-  const email = c.email(body, 'email', { required: true });
+  const id = readLogin(c, body);
   c.done();
   const out = { status: 'accepted' };
-  const n = await attempts.bump(`forgot|${sha256(email)}`, 3600);
+  const n = await attempts.bump(`forgot|${sha256(id)}`, 3600);
   if (n > 3) return out;
-  const account = await Account.findOne({ email }).lean();
+  const account = await Account.findOne(loginFilter(id)).lean();
   if (!account) return out;
   const code = humanCode(8);
   await PasswordReset.updateMany({ accountId: account._id, usedAt: null }, { $set: { usedAt: new Date() } });
@@ -270,12 +292,13 @@ async function updateMe(auth, body) {
     if (await Account.exists({ email, _id: { $ne: auth.accountId } })) throw conflict('email_taken');
     set.email = email;
   }
+  if (set.phone && set.phone !== auth.account.phone) await assertPhoneFree(set.phone, auth.accountId);
   const merged = { ...auth.account, ...set };
   set.search = searchOf(merged);
   try {
     await Account.updateOne({ _id: auth.accountId }, { $set: { ...set, updatedAt: new Date() } });
   } catch (err) {
-    if (err.code === 11000) throw conflict('email_taken');
+    if (err.code === 11000) throw dupError(err);
     throw err;
   }
   return profile(await loadAccount(auth.accountId));
@@ -387,12 +410,15 @@ async function createAdmin(auth, body) {
   const email = c.email(body, 'email', { required: true });
   const displayName = c.str(body, 'displayName', { required: true, max: 60 });
   const raw = c.phone(body, 'phone');
+  const adminPhone = raw ? normalizePhone(raw) : null;
+  if (raw && !adminPhone) c.fail('phone', 'invalid_format');
   c.done();
   if (await Account.exists({ email })) throw conflict('email_taken');
+  await assertPhoneFree(adminPhone);
   const plain = tempPassword();
   const now = new Date();
   const doc = {
-    _id: uuid(), email, passwordHash: await password.hash(plain), displayName, phone: raw ? normalizePhone(raw) : null, role: 'admin',
+    _id: uuid(), email, passwordHash: await password.hash(plain), displayName, phone: adminPhone, role: 'admin',
     preferredLanguage: 'vi', status: 'active', mustChangePassword: true, passwordChangedAt: now, createdAt: now, updatedAt: now,
   };
   doc.search = searchOf(doc);

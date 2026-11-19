@@ -58,14 +58,14 @@ test('recurring series, overlap check with force, trip change request with price
   const w = await h.world(admin);
   const series = h.expectOk(await h.api.post('manage/series', { routeId: w.route.id, vehicleId: w.vehicle.id, weekdays: [0, 1, 2, 3, 4, 5, 6], departTime: '14:00', startDate: T.today(), endDate: T.addDays(T.today(), 6), basePrice: 270000 }, admin), 201);
   assert.ok(series.createdTrips >= 6);
-  // Same vehicle at 08:00 tomorrow overlaps the 07:30 trip (150 min + 60 rest).
+  // Same vehicle at 08:00 on the test day overlaps the 07:30 trip (150 min + 60 rest).
   const clash = await h.api.post('manage/trips', { routeId: w.route.id, date: w.date, departTime: '08:00', vehicleId: w.vehicle.id }, admin);
   assert.equal(clash.body.code, 'schedule_conflict');
   assert.equal(clash.body.conflicts[0].kind, 'vehicle');
   h.expectOk(await h.api.post('manage/trips', { routeId: w.route.id, date: w.date, departTime: '08:00', vehicleId: w.vehicle.id, force: true, overrideReason: 'Xe dự phòng' }, admin), 201);
   const list = h.expectOk(await h.api.get(`manage/trips?from=${w.date}&to=${w.date}`, admin));
   assert.ok(list.items.some((t) => t.warnings.includes('vehicle_conflict')));
-  const ex = h.expectOk(await h.api.post(`manage/series/${series.id}/exceptions`, { date: T.addDays(T.today(), 2), type: 'skip', note: 'Nghỉ' }, admin));
+  const ex = h.expectOk(await h.api.post(`manage/series/${series.id}/exceptions`, { date: T.addDays(T.today(), 4), type: 'skip', note: 'Nghỉ' }, admin));
   assert.equal(ex.exceptions.length, 1);
 
   const c = await h.customer();

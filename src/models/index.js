@@ -48,7 +48,7 @@ const Account = make('Account', 'accounts', {
   [{ email: 1 }, { unique: true }],
   [{ referralCode: 1 }, { unique: true, partialFilterExpression: { referralCode: { $type: 'string' } } }],
   [{ role: 1, createdAt: -1 }, {}],
-  [{ phone: 1 }, {}],
+  [{ phone: 1 }, { unique: true, partialFilterExpression: { phone: { $type: 'string' } } }], // phone is a sign-in identifier
 ]);
 
 /** A signed-in device. Holds the hash of the current refresh token and of the previous one. */

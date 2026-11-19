@@ -1,5 +1,12 @@
 process.env.NODE_ENV = 'test';
 const fs = require('fs');
+// Tests never read the developer's .env (real SMTP, cron secret, Atlas URI): blank every key it defines,
+// dotenv does not override variables that already exist.
+try {
+  for (const k of Object.keys(require('dotenv').parse(fs.readFileSync(require('path').join(__dirname, '..', '.env'))))) {
+    if (!(k in process.env)) process.env[k] = '';
+  }
+} catch { /* no .env */ }
 // Offline machines: reuse a locally installed mongod instead of downloading one.
 if (!process.env.MONGOMS_SYSTEM_BINARY && fs.existsSync('/opt/homebrew/bin/mongod')) {
   process.env.MONGOMS_SYSTEM_BINARY = '/opt/homebrew/bin/mongod';
@@ -88,7 +95,7 @@ async function world(admin) {
     fromProvinceId: hn.id, toProvinceId: tb.id, durationMinutes: 150, basePrice: 250000, parcelEnabled: true,
     offices: [{ officeId: o1.id, side: 'pickup', offsetMinutes: 0 }, { officeId: o2.id, side: 'pickup', offsetMinutes: 30 }, { officeId: o3.id, side: 'drop', offsetMinutes: 150 }],
   }, admin), 201);
-  const date = T.addDays(T.today(), 1);
+  const date = T.addDays(T.today(), 2); // ≥ 2 days ahead: refund tiers do not depend on the hour the tests run
   const trip = expectOk(await api.post('manage/trips', { routeId: route.id, date, departTime: '07:30', vehicleId: vehicle.id, basePrice: 250000 }, admin), 201);
   return { hn, tb, o1, o2, o3, zone, layout, driver, vehicle, route, trip, date };
 }
