@@ -1,0 +1,240 @@
+/**
+ * Singleton settings of the one operator (OperatorProfile, BankInfo, CancelPolicyTier, OperatorRule, Setting,
+ * MemberTier...). Each key is one document in `settings`; reads merge stored values over defaults.
+ */
+const config = require('../config');
+const { Setting } = require('../models');
+const { Checker } = require('../lib/validate');
+const { invalid, notFound } = require('../lib/errors');
+const { bankByCode } = require('../lib/banks');
+const { iso } = require('../lib/util');
+
+const D = config.defaults;
+
+const DEFAULTS = {
+  operator: {
+    name: '', description: '', phone: '', email: '', address: '', openText: '',
+    representativeName: '', licenseNoText: '', website: '',
+  },
+  bank: { bankCode: null, accountNo: '', holderName: '' },
+  cancelPolicy: {
+    tiers: [{ hoursBefore: 24, refundPercent: 90 }, { hoursBefore: 4, refundPercent: 50 }, { hoursBefore: 0, refundPercent: 0 }],
+    cancelFee: 0,
+    changeAllowedHoursBefore: 4,
+    changeFee: 0,
+    note: '',
+  },
+  rules: { items: [] }, // [{ kind: luggage|food|pets|children|other, text }]
+  system: {
+    payDeadlineMinutes: D.payDeadlineMinutes,
+    reviewDeadlineMinutes: D.reviewDeadlineMinutes,
+    maxProofBytes: D.maxProofBytes,
+    proofRetentionDays: D.proofRetentionDays,
+    driverRestMinutes: D.driverRestMinutes,
+    salesOpenDaysBefore: D.salesOpenDaysBefore,
+    salesCloseMinutesBefore: D.salesCloseMinutesBefore,
+    lowFillPercent: 30,
+  },
+  shuttle: { registerHoursBefore: D.shuttleRegisterHoursBefore, feeRefundable: D.shuttleFeeRefundable, note: '' },
+  seatClasses: {
+    items: [
+      { code: 'standard', name: 'Ghế thường', surcharge: 0 },
+      { code: 'front', name: 'Hàng đầu', surcharge: 0 },
+      { code: 'vip', name: 'Ghế VIP', surcharge: 0 },
+    ],
+  },
+  child: { enabled: true, maxAge: 10, discountPercent: 0, note: 'Trẻ em dưới 5 tuổi ngồi cùng người lớn không tính vé' },
+  loyalty: {
+    enabled: true,
+    earnPointsPer10k: 1,
+    redeemValuePerPoint: 500,
+    maxRedeemPercent: 20,
+    tiers: [
+      { name: 'Thành viên', minPoints: 0, benefitText: '' },
+      { name: 'Bạc', minPoints: 300, benefitText: '' },
+      { name: 'Vàng', minPoints: 1000, benefitText: '' },
+    ],
+  },
+  referral: { enabled: false, referrerPromotionId: null, referredPromotionId: null, maxPerReferrer: 20 },
+  parcel: {
+    enabled: true,
+    acceptHoursBefore: D.parcelAcceptHoursBefore,
+    unclaimedHours: D.parcelUnclaimedHours,
+    defaultMaxKg: D.parcelDefaultMaxKg,
+    defaultMaxPieces: D.parcelDefaultMaxPieces,
+    maxWeightKgPerOrder: 50,
+    sizeClasses: [
+      { code: 'small', label: 'Nhỏ', maxDimText: 'Dưới 30 x 30 x 30 cm' },
+      { code: 'medium', label: 'Vừa', maxDimText: 'Dưới 50 x 50 x 50 cm' },
+      { code: 'large', label: 'Lớn', maxDimText: 'Dưới 80 x 60 x 60 cm' },
+    ],
+    cancelAfterReceivePercent: 50,
+    maxCompensationMultiple: 5,
+    claimDays: 7,
+    compensationText: '',
+    note: '',
+  },
+  content: { termsVi: '', termsEn: '', privacyVi: '', privacyEn: '', helpVi: '', helpEn: '', aboutVi: '', aboutEn: '' },
+};
+
+const KEYS = Object.keys(DEFAULTS);
+
+// ---------- validators (one per key; partial updates merge into the stored value) ----------
+
+const V = {
+  operator(c, b) {
+    const o = {};
+    for (const [k, max] of [['name', 120], ['description', 3000], ['address', 300], ['openText', 200], ['representativeName', 80], ['licenseNoText', 80], ['website', 200]]) {
+      if (b[k] !== undefined) o[k] = c.str(b, k, { max }) || '';
+    }
+    if (b.phone !== undefined) o.phone = c.phone(b, 'phone') || '';
+    if (b.email !== undefined) o.email = c.email(b, 'email') || '';
+    return o;
+  },
+  bank(c, b) {
+    const o = {};
+    if (b.bankCode !== undefined) {
+      o.bankCode = c.str(b, 'bankCode', { max: 20 }) || null;
+      if (o.bankCode && !bankByCode(o.bankCode)) c.fail('bankCode', 'invalid_enum');
+    }
+    if (b.accountNo !== undefined) o.accountNo = c.str(b, 'accountNo', { max: 30, pattern: /^[0-9A-Za-z]{4,30}$/ }) || '';
+    if (b.holderName !== undefined) o.holderName = (c.str(b, 'holderName', { max: 80 }) || '').toUpperCase();
+    return o;
+  },
+  cancelPolicy(c, b) {
+    const o = {};
+    if (b.tiers !== undefined) {
+      const arr = c.arr(b, 'tiers', { max: 10 }) || [];
+      o.tiers = arr.map((t, i) => ({
+        hoursBefore: c.int(t, 'hoursBefore', { field: `tiers[${i}].hoursBefore`, required: true, max: 720 }),
+        refundPercent: c.int(t, 'refundPercent', { field: `tiers[${i}].refundPercent`, required: true, max: 100 }),
+      })).sort((x, y) => y.hoursBefore - x.hoursBefore);
+    }
+    for (const k of ['cancelFee', 'changeFee']) if (b[k] !== undefined) o[k] = c.money(b, k) ?? 0;
+    if (b.changeAllowedHoursBefore !== undefined) o.changeAllowedHoursBefore = c.int(b, 'changeAllowedHoursBefore', { max: 720 }) ?? 0;
+    if (b.note !== undefined) o.note = c.str(b, 'note', { max: 2000 }) || '';
+    return o;
+  },
+  rules(c, b) {
+    const arr = c.arr(b, 'items', { required: true, max: 30 }) || [];
+    return {
+      items: arr.map((t, i) => ({
+        kind: c.oneOf(t, 'kind', ['luggage', 'food', 'pets', 'children', 'other'], { field: `items[${i}].kind`, required: true }),
+        text: c.str(t, 'text', { field: `items[${i}].text`, required: true, max: 2000 }),
+      })),
+    };
+  },
+  system(c, b) {
+    const o = {};
+    const ints = {
+      payDeadlineMinutes: [5, 1440], reviewDeadlineMinutes: [5, 2880], maxProofBytes: [100 * 1024, 4 * 1024 * 1024],
+      proofRetentionDays: [1, 3650], driverRestMinutes: [0, 1440], salesOpenDaysBefore: [1, 365], salesCloseMinutesBefore: [0, 1440], lowFillPercent: [0, 100],
+    };
+    for (const [k, [min, max]] of Object.entries(ints)) if (b[k] !== undefined) o[k] = c.int(b, k, { required: true, min, max });
+    return o;
+  },
+  shuttle(c, b) {
+    const o = {};
+    if (b.registerHoursBefore !== undefined) o.registerHoursBefore = c.int(b, 'registerHoursBefore', { required: true, max: 72 });
+    if (b.feeRefundable !== undefined) o.feeRefundable = c.bool(b, 'feeRefundable', { required: true });
+    if (b.note !== undefined) o.note = c.str(b, 'note', { max: 1000 }) || '';
+    return o;
+  },
+  seatClasses(c, b) {
+    const arr = c.arr(b, 'items', { required: true, max: 20 }) || [];
+    const items = arr.map((t, i) => ({
+      code: c.str(t, 'code', { field: `items[${i}].code`, required: true, max: 30, pattern: /^[a-z0-9_]+$/ }),
+      name: c.str(t, 'name', { field: `items[${i}].name`, required: true, max: 60 }),
+      surcharge: c.money(t, 'surcharge', { field: `items[${i}].surcharge` }) ?? 0,
+    }));
+    if (!items.some((x) => x.code === 'standard')) c.fail('items', 'standard_required');
+    return { items };
+  },
+  child(c, b) {
+    const o = {};
+    if (b.enabled !== undefined) o.enabled = c.bool(b, 'enabled', { required: true });
+    if (b.maxAge !== undefined) o.maxAge = c.int(b, 'maxAge', { required: true, max: 18 });
+    if (b.discountPercent !== undefined) o.discountPercent = c.int(b, 'discountPercent', { required: true, max: 100 });
+    if (b.note !== undefined) o.note = c.str(b, 'note', { max: 1000 }) || '';
+    return o;
+  },
+  loyalty(c, b) {
+    const o = {};
+    if (b.enabled !== undefined) o.enabled = c.bool(b, 'enabled', { required: true });
+    if (b.earnPointsPer10k !== undefined) o.earnPointsPer10k = c.num(b, 'earnPointsPer10k', { required: true, max: 1000 });
+    if (b.redeemValuePerPoint !== undefined) o.redeemValuePerPoint = c.money(b, 'redeemValuePerPoint', { required: true });
+    if (b.maxRedeemPercent !== undefined) o.maxRedeemPercent = c.int(b, 'maxRedeemPercent', { required: true, max: 100 });
+    if (b.tiers !== undefined) {
+      const arr = c.arr(b, 'tiers', { max: 10 }) || [];
+      o.tiers = arr.map((t, i) => ({
+        name: c.str(t, 'name', { field: `tiers[${i}].name`, required: true, max: 40 }),
+        minPoints: c.int(t, 'minPoints', { field: `tiers[${i}].minPoints`, required: true }),
+        benefitText: c.str(t, 'benefitText', { field: `tiers[${i}].benefitText`, max: 500 }) || '',
+      })).sort((x, y) => x.minPoints - y.minPoints);
+    }
+    return o;
+  },
+  referral(c, b) {
+    const o = {};
+    if (b.enabled !== undefined) o.enabled = c.bool(b, 'enabled', { required: true });
+    for (const k of ['referrerPromotionId', 'referredPromotionId']) if (b[k] !== undefined) o[k] = c.id(b, k) || null;
+    if (b.maxPerReferrer !== undefined) o.maxPerReferrer = c.int(b, 'maxPerReferrer', { required: true, max: 1000 });
+    return o;
+  },
+  parcel(c, b) {
+    const o = {};
+    if (b.enabled !== undefined) o.enabled = c.bool(b, 'enabled', { required: true });
+    const ints = { acceptHoursBefore: 72, unclaimedHours: 720, defaultMaxPieces: 1000, cancelAfterReceivePercent: 100, maxCompensationMultiple: 100, claimDays: 365 };
+    for (const [k, max] of Object.entries(ints)) if (b[k] !== undefined) o[k] = c.int(b, k, { required: true, max });
+    for (const k of ['defaultMaxKg', 'maxWeightKgPerOrder']) if (b[k] !== undefined) o[k] = c.num(b, k, { required: true, min: 0.1, max: 10000 });
+    if (b.sizeClasses !== undefined) {
+      const arr = c.arr(b, 'sizeClasses', { max: 3 }) || [];
+      o.sizeClasses = arr.map((t, i) => ({
+        code: c.oneOf(t, 'code', ['small', 'medium', 'large'], { field: `sizeClasses[${i}].code`, required: true }),
+        label: c.str(t, 'label', { field: `sizeClasses[${i}].label`, required: true, max: 40 }),
+        maxDimText: c.str(t, 'maxDimText', { field: `sizeClasses[${i}].maxDimText`, max: 100 }) || '',
+      }));
+    }
+    for (const k of ['compensationText', 'note']) if (b[k] !== undefined) o[k] = c.str(b, k, { max: 3000 }) || '';
+    return o;
+  },
+  content(c, b) {
+    const o = {};
+    for (const k of Object.keys(DEFAULTS.content)) if (b[k] !== undefined) o[k] = c.str(b, k, { max: 50000, trim: false }) || '';
+    return o;
+  },
+};
+
+// ---------- read / write ----------
+
+let cache = { at: 0, values: null };
+const TTL = 5000;
+
+async function all() {
+  if (cache.values && Date.now() - cache.at < TTL) return cache.values;
+  const rows = await Setting.find({ _id: { $in: KEYS } }).lean();
+  const stored = Object.fromEntries(rows.map((r) => [r._id, r]));
+  const values = {};
+  for (const k of KEYS) values[k] = { ...DEFAULTS[k], ...(stored[k]?.value || {}), updatedAt: iso(stored[k]?.updatedAt) };
+  cache = { at: Date.now(), values };
+  return values;
+}
+
+const get = async (key) => (await all())[key];
+
+async function update(key, body, accountId) {
+  if (!V[key]) throw notFound();
+  const c = new Checker();
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) throw invalid([{ field: 'body', code: 'invalid_type' }]);
+  const patch = V[key](c, body);
+  c.done();
+  const current = await Setting.findById(key).lean();
+  const value = { ...(current?.value || {}), ...patch };
+  await Setting.updateOne({ _id: key }, { $set: { value, updatedBy: accountId, updatedAt: new Date() } }, { upsert: true });
+  cache = { at: 0, values: null };
+  return get(key);
+}
+
+const clearCache = () => { cache = { at: 0, values: null }; };
+
+module.exports = { get, all, update, KEYS, DEFAULTS, clearCache };
