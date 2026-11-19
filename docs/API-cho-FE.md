@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| **Base URL** | `https://<seatroute-api>.vercel.app` (đổi khi deploy). Mọi endpoint nằm dưới `/v1` |
-| **Kiểm tra sống** | `GET /v1/health` |
-| **Trang xóa tài khoản** (khai trên Google Play) | `GET /account/delete` (`?lang=en` cho tiếng Anh) |
-| **Chính sách quyền riêng tư** | `GET /privacy` (`?lang=en`) |
+| **Base URL** | `https://seatrouteapi.vercel.app` — mọi endpoint nằm dưới `/v1`, ví dụ `https://seatrouteapi.vercel.app/v1/auth/login` |
+| **Kiểm tra sống** | `GET https://seatrouteapi.vercel.app/v1/health` |
+| **Trang xóa tài khoản** (khai trên Google Play) | `https://seatrouteapi.vercel.app/account/delete` (`?lang=en` cho tiếng Anh) |
+| **Chính sách quyền riêng tư** (khai trên Google Play) | `https://seatrouteapi.vercel.app/privacy` (`?lang=en`) |
 | **Định dạng** | Chỉ HTTPS, JSON UTF-8. Thời điểm ISO 8601 UTC (`2026-11-20T00:30:00Z`), ngày địa phương `yyyy-MM-dd`, giờ địa phương `HH:mm`. Tiền là **số nguyên đồng** |
 | **Đăng nhập** | `Authorization: Bearer <accessToken>` ở mọi endpoint có 🔒 (gần như tất cả) |
 | **Vai trò** | `customer` (khách hàng, tự đăng ký) và `admin` (quản trị viên). Máy chủ kiểm tra vai trò ở **mọi** endpoint |
@@ -13,6 +13,7 @@
 ### Thay đổi gần đây
 | Ngày | Thay đổi | FE cần làm |
 |---|---|---|
+| 2026-11-19 | API đã deploy: Base URL `https://seatrouteapi.vercel.app`; link trang xóa tài khoản / quyền riêng tư cho Google Play ở bảng trên | Cấu hình Base URL trong app (`BuildConfig`) |
 | 2026-11-19 | Đăng nhập và quên mật khẩu nhận **email hoặc số điện thoại** trong trường `login` (2.3, 2.6). Mỗi SĐT chỉ thuộc một tài khoản → lỗi mới `409 phone_taken` khi đăng ký / sửa hồ sơ / tạo admin (2.2, 2.8, 9.13) | Đổi ô "Email" thành "Email hoặc số điện thoại", gửi `login` thay cho `email`; hiện thông báo `phone_taken` |
 | 2026-11-19 | Bổ sung hướng dẫn hiển thị ảnh chứng từ ở màn hình lịch sử của quản trị viên (5.6, 9.4) | Không đổi API |
 
@@ -489,7 +490,7 @@ Phản hồi `201`:
 
 ### 5.6 Ảnh chứng từ (link ký có hạn)
 * `GET /v1/proofs/{id}` (chủ đơn hoặc quản trị viên) → `{ ...proof, image: { url, expiresAt } | null, imageDeleted }`.
-* `image.url` = `/v1/files/{fileId}?exp=…&sig=…`, **hết hạn sau 5 phút**, không cần header Bearer (dùng thẳng trong Coil/Glide). Nếu `url` bắt đầu bằng `/` thì ghép với Base URL. Hết hạn → gọi lại `GET /proofs/{id}` để lấy link mới.
+* `image.url` = `https://seatrouteapi.vercel.app/v1/files/{fileId}?exp=…&sig=…` (link đầy đủ), **hết hạn sau 5 phút**, không cần header Bearer (dùng thẳng trong Coil/Glide). Nếu `url` bắt đầu bằng `/` thì ghép với Base URL. Hết hạn → gọi lại `GET /proofs/{id}` để lấy link mới.
 * `imageDeleted: true` khi ảnh đã tự xóa theo thời gian lưu giữ (mặc định 90 ngày, `proofRetentionDays`).
 * Ảnh **không có đường dẫn cố định**: server lưu ảnh riêng tư (collection `files`) và mỗi lần đọc API sinh một link ký mới. FE **không lưu `url` lâu dài** (vào DB máy, cache theo URL); cache ảnh theo `proof.id` nếu cần.
 
@@ -774,7 +775,7 @@ Mọi đường dẫn `/v1/manage/*`, `/v1/admin/*` và các thao tác duyệt (
     "duplicateOf": [{ "proofId", "orderType", "orderId", "orderCode": "SR7K3M9Q", "uploadedAt", "sameCustomer": false }],
     "customer": { "displayName": "Nguyễn Văn An", "phone": "0901234567" },
     "order": { "code": "SR36X3HP", "status": "pending_review", "totalAmount": 530000, "seats": [{ "label": "B1", "claimState": "held" }], "departAt": "…" },
-    "image": { "url": "/v1/files/…?exp=…&sig=…", "expiresAt": "…" }
+    "image": { "url": "https://seatrouteapi.vercel.app/v1/files/…?exp=…&sig=…", "expiresAt": "…" }
   }], "nextCursor": null, "total": 1 }
 ```
 * Màn hình **lịch sử chứng từ** dùng cùng endpoint với `status=approved|rejected` (mới nhất trên). Ảnh nằm ở `image.url` (link ký 5 phút, xem 5.6): hết hạn thì tải lại trang hoặc gọi `GET /proofs/{id}`.

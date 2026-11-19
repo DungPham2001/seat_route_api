@@ -1,7 +1,7 @@
 # SeatRoute — API
 
 Node.js (Express 4) + MongoDB (Mongoose 8) cho app Android "SeatRoute" (đặt ghế limo liên tỉnh của một nhà xe, chuyển khoản thủ công + ảnh chứng từ, gửi đồ theo chuyến).
-Mô tả app: [docs/SeatRoute-mo-ta.md](docs/SeatRoute-mo-ta.md) · Tài liệu ghép API cho FE: [docs/API-cho-FE.md](docs/API-cho-FE.md).
+Production: <https://seatrouteapi.vercel.app> (`/v1/health`) · Mô tả app: [docs/SeatRoute-mo-ta.md](docs/SeatRoute-mo-ta.md) · Tài liệu ghép API cho FE: [docs/API-cho-FE.md](docs/API-cho-FE.md).
 Cùng kiến trúc với `RoomKeepAPI`: entry Vercel ở `api/`, token/phiên/quên mật khẩu giống hệt, rate limit lưu trong Mongo, test trên MongoDB in-memory.
 
 ```bash
@@ -43,4 +43,4 @@ npm run docs             # sinh lại mục 10 (CRUD) của docs/API-cho-FE.md s
 
 ## Deploy (Vercel)
 
-`vercel.json` chuyển mọi request vào `api/index.js` (region `sin1`, cron `/v1/jobs/run` 19:00 UTC = 02:00 giờ VN: hết hạn đơn, sinh chuyến lặp, xóa ảnh quá hạn, nhắc hàng chưa nhận). Đặt `MONGODB_URI`, `JWT_SECRET`, `CRON_SECRET`, `PUBLIC_BASE_URL`, SMTP; chạy `npm run db:init` một lần với đúng URI.
+`vercel.json` chuyển mọi request vào `api/index.js` (region `sin1`, cron `/v1/jobs/run` 19:00 UTC = 02:00 giờ VN: hết hạn đơn, sinh chuyến lặp, xóa ảnh quá hạn, nhắc hàng chưa nhận). Đặt `MONGODB_URI`, `JWT_SECRET`, `CRON_SECRET`, `PUBLIC_BASE_URL=https://seatrouteapi.vercel.app`, SMTP; chạy `npm run db:init` một lần với đúng URI.
