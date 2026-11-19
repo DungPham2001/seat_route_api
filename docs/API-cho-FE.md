@@ -10,6 +10,12 @@
 | **Đăng nhập** | `Authorization: Bearer <accessToken>` ở mọi endpoint có 🔒 (gần như tất cả) |
 | **Vai trò** | `customer` (khách hàng, tự đăng ký) và `admin` (quản trị viên). Máy chủ kiểm tra vai trò ở **mọi** endpoint |
 
+### Thay đổi gần đây
+| Ngày | Thay đổi | FE cần làm |
+|---|---|---|
+| 2026-11-19 | Đăng nhập và quên mật khẩu nhận **email hoặc số điện thoại** trong trường `login` (2.3, 2.6). Mỗi SĐT chỉ thuộc một tài khoản → lỗi mới `409 phone_taken` khi đăng ký / sửa hồ sơ / tạo admin (2.2, 2.8, 9.13) | Đổi ô "Email" thành "Email hoặc số điện thoại", gửi `login` thay cho `email`; hiện thông báo `phone_taken` |
+| 2026-11-19 | Bổ sung hướng dẫn hiển thị ảnh chứng từ ở màn hình lịch sử của quản trị viên (5.6, 9.4) | Không đổi API |
+
 Ký hiệu: 🔒 = cần đăng nhập · 👤 = chỉ khách hàng · 🛠 = chỉ quản trị viên · `*` = bắt buộc.
 
 **Mục lục**
@@ -229,7 +235,7 @@ Phản hồi (dùng chung cho đăng ký và đăng nhập):
 * `POST /v1/auth/forgot` `{ "login": "<email hoặc SĐT>" }` → **luôn `202`** `{ "status": "accepted" }` (không lộ email nào có tài khoản). Email chứa mã `ABCD-EFGH`, hạn 30 phút, dùng 1 lần; yêu cầu mã mới thì mã cũ hết hiệu lực; tối đa 3 mã/giờ/email hoặc SĐT. Nhập SĐT thì mã vẫn gửi tới **email của tài khoản** đó. Môi trường dev chưa có SMTP: phản hồi có thêm `devToken` để test (production không có).
 * `POST /v1/auth/reset` `{ "token": "ABCD-EFGH", "newPassword" }` → `204`. `token` không phân biệt hoa thường, có hay không dấu gạch. Sai/hết hạn → `400 reset_invalid`. Thành công: **mọi thiết bị bị đăng xuất**, bỏ khóa sai mật khẩu, server gửi email "mật khẩu đã thay đổi".
 
-Luồng: *Quên mật khẩu* (nhập email hoặc SĐT) → *Nhập mã + mật khẩu mới* (nút "Gửi lại mã" sau 60 giây) → *Đăng nhập* (điền sẵn email).
+Luồng: *Quên mật khẩu* (nhập email hoặc SĐT) → *Nhập mã + mật khẩu mới* (nút "Gửi lại mã" sau 60 giây) → *Đăng nhập* (điền sẵn email/SĐT vừa nhập).
 
 ### 2.7 🔒 Đổi mật khẩu
 `POST /v1/auth/change-password` `{ "oldPassword", "newPassword" }` → `{ "status": "ok", "revokedSessions": 1, "account": {...} }`. Thiết bị hiện tại giữ phiên, thiết bị khác bị đăng xuất. Trùng mật khẩu cũ → `400 same_as_old`. Xóa cờ `mustChangePassword`.
@@ -484,7 +490,17 @@ Phản hồi `201`:
 ### 5.6 Ảnh chứng từ (link ký có hạn)
 * `GET /v1/proofs/{id}` (chủ đơn hoặc quản trị viên) → `{ ...proof, image: { url, expiresAt } | null, imageDeleted }`.
 * `image.url` = `/v1/files/{fileId}?exp=…&sig=…`, **hết hạn sau 5 phút**, không cần header Bearer (dùng thẳng trong Coil/Glide). Nếu `url` bắt đầu bằng `/` thì ghép với Base URL. Hết hạn → gọi lại `GET /proofs/{id}` để lấy link mới.
-* `imageDeleted: true` khi ảnh đã tự xóa theo thời gian lưu giữ.
+* `imageDeleted: true` khi ảnh đã tự xóa theo thời gian lưu giữ (mặc định 90 ngày, `proofRetentionDays`).
+* Ảnh **không có đường dẫn cố định**: server lưu ảnh riêng tư (collection `files`) và mỗi lần đọc API sinh một link ký mới. FE **không lưu `url` lâu dài** (vào DB máy, cache theo URL); cache ảnh theo `proof.id` nếu cần.
+
+Nơi có ảnh:
+
+| Màn hình | API | Trường ảnh |
+|---|---|---|
+| 🛠 Hàng chờ duyệt | `GET /v1/manage/proofs?status=pending` | `items[].image.url` |
+| 🛠 Lịch sử chứng từ (đã duyệt / bị từ chối) | `GET /v1/manage/proofs?status=approved` hoặc `rejected` (lọc `orderType`, `tripId`, `date`) | `items[].image.url` |
+| Xem ảnh phóng to (khách & admin) | `GET /v1/proofs/{id}` | `image.url` |
+| Chi tiết đơn (`GET /bookings/{id}`, `/parcels/{id}`) | `proofs[]` chỉ có `id`, `status`, `uploadedAt`... **không có link** | bấm vào → `GET /v1/proofs/{id}` |
 
 ### 5.7 👤 Khi ghế bị người khác lấy trước
 Trạng thái `seat_lost` (55). Ba lựa chọn hiện rõ:
@@ -761,6 +777,7 @@ Mọi đường dẫn `/v1/manage/*`, `/v1/admin/*` và các thao tác duyệt (
     "image": { "url": "/v1/files/…?exp=…&sig=…", "expiresAt": "…" }
   }], "nextCursor": null, "total": 1 }
 ```
+* Màn hình **lịch sử chứng từ** dùng cùng endpoint với `status=approved|rejected` (mới nhất trên). Ảnh nằm ở `image.url` (link ký 5 phút, xem 5.6): hết hạn thì tải lại trang hoặc gọi `GET /proofs/{id}`.
 * `duplicateOf` không rỗng → **cảnh báo "nghi trùng chứng từ"** (146), chỉ là cảnh báo.
 * `POST /v1/proofs/{id}/approve` `{ note? }` → đơn `confirmed`, ghế `sold` (đơn gửi đồ → `paid`). Chỉ duyệt được khi đơn `pending_review`/`info_requested`; đơn `seat_lost` phải xếp ghế trước (`409 invalid_status`).
 * `POST /v1/proofs/{id}/reject` `{ reason* }` → ghế được **nhả** cho đơn kế tiếp, đơn `rejected` (khách gửi lại được).
@@ -905,7 +922,7 @@ Xuất tệp: `GET /v1/manage/export?type=bookings|trips|reconciliation|parcels&
 Bật/tắt trung chuyển và gửi đồ theo tuyến: trường `shuttleEnabled`, `parcelEnabled` của tuyến (mục 10).
 
 ### 9.13 🛠 Quản trị viên và khách hàng
-* `GET /v1/admin/admins` · `POST /v1/admin/admins` `{ email*, displayName*, phone }` → `201 { account, temporaryPassword }` (hiện **một lần** để trao cho người mới; họ phải đổi khi đăng nhập) · `POST /v1/admin/admins/{id}/reset-password` → `{ temporaryPassword }` · `POST /v1/admin/admins/{id}/revoke` (hoặc `DELETE`) → `204`. Không tự thu hồi mình; quản trị viên cuối → `409 last_admin` (256, 260).
+* `GET /v1/admin/admins` · `POST /v1/admin/admins` `{ email*, displayName*, phone }` (SĐT trùng → `409 phone_taken`) → `201 { account, temporaryPassword }` (hiện **một lần** để trao cho người mới; họ phải đổi khi đăng nhập) · `POST /v1/admin/admins/{id}/reset-password` → `{ temporaryPassword }` · `POST /v1/admin/admins/{id}/revoke` (hoặc `DELETE`) → `204`. Không tự thu hồi mình; quản trị viên cuối → `409 last_admin` (256, 260).
 * `GET /v1/admin/customers?q=&status=active|suspended&kind=new|returning` → `[{ id, email, displayName, phone, status, suspendReason, adminNote, bookings, completedTrips, totalSpent, kind, firstBookingAt, lastBookingAt, lastLoginAt, createdAt }]` (225).
 * `GET /v1/admin/customers/{id}` (+ `refundAccount`, `emergencyContact`, `loyalty`, `recentBookings`, `recentParcels`, `adminHistory`) · `PATCH /v1/admin/customers/{id}` `{ adminNote }`.
 * `POST /v1/admin/accounts/{id}/suspend` `{ reason* }` (đăng xuất mọi thiết bị ngay) · `POST /v1/admin/accounts/{id}/unsuspend` (226).
@@ -1385,6 +1402,11 @@ Admin có thêm `tripStatus` (`scheduled` Đã lên lịch · `running` · `comp
 ---
 
 ## 12. Luồng màn hình đề xuất
+
+### 12.0 Đăng nhập (khách & quản trị viên chung màn hình)
+1. Ô "Email hoặc số điện thoại" + mật khẩu → `POST /auth/login { login, password, deviceName, deviceId }`.
+2. `account.role = customer` → 4 tab khách; `admin` → 5 tab quản trị. `mustChangePassword: true` → chỉ màn hình đổi mật khẩu (2.7).
+3. "Quên mật khẩu" → `POST /auth/forgot { login }` → nhập mã từ email → `POST /auth/reset` → quay lại đăng nhập.
 
 ### 12.1 Khách đặt ghế
 1. Tab Đặt chuyến → `GET /provinces?hasTrips=true&side=from` → chọn điểm đi → `…&side=to&fromProvinceId=` → ngày, số người.
