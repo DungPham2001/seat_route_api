@@ -391,6 +391,9 @@ async function create(auth, body, { idempotencyKey } = {}) {
 
 // ---------- read ----------
 
+/** The one definition of "approved but not collected": used by the dashboard card, the inbox and the list. */
+const UNPAID = { status: 'confirmed', paidAt: null, totalAmount: { $gt: 0 } };
+
 const TABS = {
   pending: () => ({ status: 'pending' }),
   upcoming: (now) => ({ status: { $in: ['confirmed', 'cancel_requested'] }, departAt: { $gt: T.addMinutes(now, -720) } }),
@@ -405,7 +408,7 @@ async function list(auth, query) {
   if (query.status) filter.status = { $in: String(query.status).split(',') };
   if (auth.role === 'admin') {
     for (const k of ['tripId', 'source', 'customerAccountId', 'guestContactId', 'routeId']) if (query[k]) filter[k] = String(query[k]);
-    if (query.payment === 'unpaid') Object.assign(filter, { status: 'confirmed', paidAt: null });
+    if (query.payment === 'unpaid') { delete filter.$or; delete filter.departAt; Object.assign(filter, UNPAID); }
     if (query.payment === 'paid') filter.paidAt = { $ne: null };
     if (T.isDate(query.from) || T.isDate(query.to)) {
       filter.departAt = {};
@@ -1167,6 +1170,7 @@ async function lookupPhone(query) {
 }
 
 module.exports = {
+  UNPAID,
   HELD, OPEN, newCode, load, loadFor, presentMany, presentOne, quote, create, list, get, history,
   approve, approveMany, collect, reject, assignSeats, reassign, moveToTrip, refundPreview, cancelPreview, cancelBooking, requestCancel,
   decideRequest, decideCancel, listRequests, withdrawRequest, presentRequest, adminCancel, listRefunds, recordRefund, refundBooking, presentRefund, afterRefund,

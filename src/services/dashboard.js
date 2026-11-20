@@ -71,7 +71,7 @@ const config = () => require('../config');
 async function unpaidSummary() {
   const now = new Date();
   const rows = await Booking.aggregate([
-    { $match: { status: 'confirmed', paidAt: null, source: 'app', totalAmount: { $gt: 0 } } },
+    { $match: require('./bookings').UNPAID },
     { $group: { _id: null, count: { $sum: 1 }, amount: { $sum: '$totalAmount' }, soon: { $sum: { $cond: [{ $lte: ['$departAt', T.addMinutes(now, 1440)] }, 1, 0] } }, soonAmount: { $sum: { $cond: [{ $lte: ['$departAt', T.addMinutes(now, 1440)] }, '$totalAmount', 0] } } } },
   ]);
   return { count: rows[0]?.count || 0, amount: rows[0]?.amount || 0, tripsWithin24h: rows[0]?.soon || 0, amountWithin24h: rows[0]?.soonAmount || 0 };
@@ -207,7 +207,7 @@ async function calendar(query) {
     Trip.aggregate([{ $match: { departAt: { $gte: start, $lt: end }, status: { $ne: 'cancelled' } } }, { $group: { _id: '$date', n: { $sum: 1 } } }]),
     Booking.aggregate([{ $match: { status: 'pending', departAt: { $gte: start, $lt: end } } }, { $group: { _id: day('$departAt'), n: { $sum: 1 } } }]),
     OrderRequest.aggregate([{ $match: { status: 'pending', departAt: { $gte: start, $lt: end } } }, { $group: { _id: day('$departAt'), n: { $sum: 1 } } }]),
-    Booking.aggregate([{ $match: { status: 'confirmed', paidAt: null, source: 'app', departAt: { $gte: start, $lt: end } } }, { $group: { _id: day('$departAt'), n: { $sum: 1 } } }]),
+    Booking.aggregate([{ $match: { ...require('./bookings').UNPAID, departAt: { $gte: start, $lt: end } } }, { $group: { _id: day('$departAt'), n: { $sum: 1 } } }]),
     Parcel.aggregate([{ $match: { status: 'pending', date: { $gte: from, $lte: to } } }, { $group: { _id: '$date', n: { $sum: 1 } } }]),
   ]);
   const get = (arr, d) => arr.find((x) => x._id === d)?.n || 0;

@@ -1,9 +1,9 @@
 /**
- * Demo data for the app developers and for the Google Play reviewer test accounts (use a TEST database):
+ * Sample data (offices, vehicles, trips, orders, accounts) for an empty database:
  *   MONGODB_URI=".../seatroute_test" npm run seed:demo
  * Creates (once): an operator profile, bank info, provinces Hà Nội / Thái Bình, 4 offices, shuttle zones,
  * a 9-seat layout, 2 vehicles, 2 drivers, the route Hà Nội -> Thái Bình and its reverse, daily recurring trips,
- * parcel rates and categories, FAQ, plus a demo admin and two demo customers whose random passwords are printed once,
+ * parcel rates and categories, FAQ, plus an admin and two customers whose random passwords are printed once,
  * and sample orders in every state (pending, approved + paid, approved but not paid yet, rejected, cancel requested,
  * cancelled, a counter booking, parcels). Payment happens at the counter: there are no receipt photos.
  * Runs through the real API (in-process), so every rule applies.
@@ -19,9 +19,9 @@ const password = require('../src/lib/password');
 const { tempPassword } = require('../src/services/accounts');
 const T = require('../src/lib/time');
 
-const ADMIN_EMAIL = process.env.DEMO_ADMIN_EMAIL || 'demo-admin@seatroute.test';
-const CUSTOMER_EMAIL = process.env.DEMO_CUSTOMER_EMAIL || 'demo-khach@seatroute.test';
-const CUSTOMER2_EMAIL = process.env.DEMO_CUSTOMER2_EMAIL || 'demo-khach2@seatroute.test';
+const ADMIN_EMAIL = process.env.SEED_ADMIN_EMAIL || 'quantri@seatroute.vn';
+const CUSTOMER_EMAIL = process.env.SEED_CUSTOMER_EMAIL || 'minhquan.nguyen@seatroute.vn';
+const CUSTOMER2_EMAIL = process.env.SEED_CUSTOMER2_EMAIL || 'thibinh.tran@seatroute.vn';
 
 async function call(method, path, token, body) {
   const r = request(app)[method](`/v1/${path}`).set('Accept-Language', 'vi');
@@ -43,10 +43,10 @@ async function main() {
   const adminPass = tempPassword();
   const now = new Date();
   await models.Account.deleteOne({ email: ADMIN_EMAIL });
-  await models.Account.create({ _id: uuid(), email: ADMIN_EMAIL, passwordHash: await password.hash(adminPass), displayName: 'Quản trị Demo', role: 'admin', status: 'active', search: noAccent(`quan tri demo ${ADMIN_EMAIL}`), createdAt: now, updatedAt: now });
+  await models.Account.create({ _id: uuid(), email: ADMIN_EMAIL, passwordHash: await password.hash(adminPass), displayName: 'Nguyễn Văn Hùng', role: 'admin', status: 'active', search: noAccent(`nguyen van hung ${ADMIN_EMAIL}`), createdAt: now, updatedAt: now });
   const A = (await call('post', 'auth/login', null, { email: ADMIN_EMAIL, password: adminPass, deviceName: 'seed' })).tokens.accessToken;
 
-  await call('put', 'admin/operator', A, { name: 'Nhà xe Demo Limousine', description: 'Limousine 9 chỗ Hà Nội - Thái Bình, xuất bến đúng giờ.', phone: '0241234567', address: '1 Phạm Hùng, Hà Nội', openText: '05:00 - 21:00 hằng ngày', representativeName: 'Nguyễn Văn Demo', licenseNoText: 'GP-DEMO-001' });
+  await call('put', 'admin/operator', A, { name: 'Nhà xe SeatRoute Limousine', description: 'Limousine 9 chỗ Hà Nội - Thái Bình, xuất bến đúng giờ.', phone: '0241234567', address: '1 Phạm Hùng, Hà Nội', openText: '05:00 - 21:00 hằng ngày', representativeName: 'Nguyễn Văn Hùng', licenseNoText: 'GP-HN-0192' });
   await call('put', 'admin/cancel-policy', A, { tiers: [{ hoursBefore: 24, refundPercent: 100 }, { hoursBefore: 6, refundPercent: 70 }, { hoursBefore: 2, refundPercent: 50 }, { hoursBefore: 0, refundPercent: 0 }], cancelFee: 10000 });
   await call('put', 'admin/settings/rules', A, { items: [{ kind: 'luggage', text: 'Mỗi khách 1 vali 20kg và 1 túi xách.' }, { kind: 'pets', text: 'Không mang thú cưng.' }, { kind: 'children', text: 'Trẻ dưới 5 tuổi ngồi cùng người lớn không tính vé.' }] });
 
@@ -96,18 +96,18 @@ async function main() {
   }
   await call('post', 'admin/promotions', A, { code: 'TET2027', title: 'Giảm 50.000đ dịp Tết', kind: 'amount', value: 50000, minAmount: 200000, perUserLimit: 1 });
   for (const text of ['Chất cháy nổ, vũ khí', 'Chất ma túy, hàng cấm theo pháp luật', 'Động vật sống']) await call('post', 'admin/prohibited-items', A, { text });
-  await call('post', 'admin/announcements', A, { title: 'Chào mừng', body: 'Nhà xe Demo mở bán vé trên ứng dụng.', kind: 'news', notify: false });
+  await call('post', 'admin/announcements', A, { title: 'Chào mừng', body: 'Nhà xe SeatRoute mở bán vé trên ứng dụng.', kind: 'news', notify: false });
 
   const customerPass = tempPassword();
   await models.Account.deleteOne({ email: CUSTOMER_EMAIL });
-  const C = (await call('post', 'auth/register', null, { email: CUSTOMER_EMAIL, password: customerPass, displayName: 'Khách Demo', phone: '0909000111', acceptTerms: true })).tokens.accessToken;
+  const C = (await call('post', 'auth/register', null, { email: CUSTOMER_EMAIL, password: customerPass, displayName: 'Nguyễn Minh Quân', phone: '0909000111', acceptTerms: true })).tokens.accessToken;
   const customer2Pass = tempPassword();
   await models.Account.deleteOne({ email: CUSTOMER2_EMAIL });
   const C2 = (await call('post', 'auth/register', null, { email: CUSTOMER2_EMAIL, password: customer2Pass, displayName: 'Trần Thị Bình', phone: '0909000222', acceptTerms: true })).tokens.accessToken;
 
   await sampleOrders({ A, C, C2, route, back, o, start });
 
-  console.log('Demo data created. Test accounts (shown once):');
+  console.log('Data created. Accounts (shown once):');
   console.log(`  admin:      ${ADMIN_EMAIL} / ${adminPass}`);
   console.log(`  customer:   ${CUSTOMER_EMAIL} / ${customerPass}   (SĐT 0909000111)`);
   console.log(`  customer 2: ${CUSTOMER2_EMAIL} / ${customer2Pass}   (SĐT 0909000222)`);
