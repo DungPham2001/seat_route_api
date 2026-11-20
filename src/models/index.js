@@ -21,23 +21,19 @@ const stamps = { createdAt: { type: Date, default: Date.now }, updatedAt: { type
 /** One login. role: customer (self sign-up) | admin (created on the server or by another admin). */
 const Account = make('Account', 'accounts', {
   _id: String,
-  email: { type: String, required: true },
+  email: { type: String, default: null }, // optional; unique when present
   passwordHash: { type: String, required: true },
   displayName: { type: String, required: true },
-  phone: { type: String, default: null }, // normalized 0xxxxxxxxx
+  phone: { type: String, default: null }, // normalized 0xxxxxxxxx; required for customers, a sign-in identifier
   role: { type: String, enum: ['customer', 'admin'], required: true },
   preferredLanguage: { type: String, enum: ['vi', 'en'], default: 'vi' },
   status: { type: String, enum: ['active', 'suspended'], default: 'active' },
   suspendReason: { type: String, default: null },
-  mustChangePassword: { type: Boolean, default: false },
   birthDate: { type: String, default: null },
   gender: { type: String, default: null },
   avatarColor: { type: String, default: null },
   referralCode: { type: String, default: null },
   adminNote: { type: String, default: '' },
-  preferences: { type: Mixed, default: {} },
-  refundAccount: { type: Mixed, default: null },
-  emergencyContact: { type: Mixed, default: null },
   onboardingMarks: { type: [String], default: [] },
   search: { type: String, default: '' },
   termsAcceptedAt: Date,
@@ -45,7 +41,7 @@ const Account = make('Account', 'accounts', {
   lastLoginAt: Date,
   ...stamps,
 }, [
-  [{ email: 1 }, { unique: true }],
+  [{ email: 1 }, { unique: true, partialFilterExpression: { email: { $type: 'string' } } }],
   [{ referralCode: 1 }, { unique: true, partialFilterExpression: { referralCode: { $type: 'string' } } }],
   [{ role: 1, createdAt: -1 }, {}],
   [{ phone: 1 }, { unique: true, partialFilterExpression: { phone: { $type: 'string' } } }], // phone is a sign-in identifier
@@ -141,6 +137,8 @@ const Trip = make('Trip', 'trips', {
   seriesId: { type: String, default: null },
   basePrice: { type: Number, required: true },
   prices: { type: Mixed, default: [] },
+  frontSurcharge: { type: Number, default: 0 }, // copied from the vehicle when the trip is created
+  vipSurcharge: { type: Number, default: 0 },
   layout: { type: Mixed, default: null }, // { layoutId, name, rows, cols }
   seatCount: { type: Number, default: 0 },
   parcelCapacity: { type: Mixed, default: null }, // { maxKg, maxPieces }
@@ -163,7 +161,7 @@ const Trip = make('Trip', 'trips', {
   [{ seriesId: 1, date: 1 }, {}],
 ]);
 
-/** One row per (trip, seat): `_id = "<tripId>:<seatId>"` makes the pair unique. Claims are conditional updates. */
+/** One row per (trip, seat): `_id = "<tripId>:<seatId>"` makes the pair unique. Holding a seat is a conditional update free -> pending. */
 const TripSeat = make('TripSeat', 'trip_seats', {
   _id: String,
   tripId: { type: String, required: true },
@@ -173,7 +171,7 @@ const TripSeat = make('TripSeat', 'trip_seats', {
   col: Number,
   seatClass: { type: String, default: 'standard' },
   isSellable: { type: Boolean, default: true },
-  state: { type: String, enum: ['free', 'claimed', 'sold', 'locked'], default: 'free' },
+  state: { type: String, enum: ['free', 'pending', 'sold', 'locked'], default: 'free' },
   bookingId: { type: String, default: null },
   bookingSeatId: { type: String, default: null },
   claimedAt: { type: Date, default: null },
@@ -202,10 +200,10 @@ const Booking = make('Booking', 'bookings', {
   departAt: { type: Date, required: true },
   customerAccountId: { type: String, default: null },
   guestContactId: { type: String, default: null },
-  source: { type: String, enum: ['app', 'admin'], default: 'app' },
+  source: { type: String, enum: ['app', 'counter'], default: 'app' },
   status: {
     type: String,
-    enum: ['awaiting_payment', 'pending_review', 'info_requested', 'seat_lost', 'rejected', 'expired', 'confirmed', 'completed', 'cancelled'],
+    enum: ['pending', 'confirmed', 'completed', 'rejected', 'cancel_requested', 'cancelled'],
     required: true,
   },
   seats: { type: Mixed, default: [] },
@@ -218,20 +216,17 @@ const Booking = make('Booking', 'bookings', {
   promoCode: { type: String, default: null },
   promotionId: { type: String, default: null },
   voucherId: { type: String, default: null },
-  pointsUsed: { type: Number, default: 0 },
   note: { type: String, default: '' },
   internalNotes: { type: Mixed, default: [] },
-  payDeadline: { type: Date, default: null },
-  proofSubmittedAt: { type: Date, default: null },
   confirmedAt: { type: Date, default: null },
+  paidAt: { type: Date, default: null }, // when the money was collected at the counter (null = approved but not paid yet)
   completedAt: { type: Date, default: null },
   cancelledAt: { type: Date, default: null },
   cancelReason: { type: String, default: null },
-  payMethod: { type: String, default: null }, // proof | cash | transfer | free
+  payMethod: { type: String, default: null }, // how it was collected: cash | transfer | free (set when paid)
   compReason: { type: String, default: null },
   paidAmount: { type: Number, default: 0 },
   refundedAmount: { type: Number, default: 0 },
-  bankSnapshot: { type: Mixed, default: null },
   cancelPolicySnapshot: { type: Mixed, default: null },
   notices: { type: Mixed, default: [] }, // office changed / trip changed flags for the customer
   pointsAwarded: { type: Number, default: 0 },
@@ -242,9 +237,10 @@ const Booking = make('Booking', 'bookings', {
   [{ code: 1 }, { unique: true }],
   [{ customerAccountId: 1, createdAt: -1 }, {}],
   [{ tripId: 1, status: 1 }, {}],
-  [{ status: 1, payDeadline: 1 }, {}],
+  [{ status: 1, createdAt: 1 }, {}],
   [{ guestContactId: 1 }, {}],
   [{ departAt: 1 }, {}],
+  [{ status: 1, paidAt: 1, departAt: 1 }, {}],
 ]);
 
 const Parcel = make('Parcel', 'parcels', {
@@ -283,8 +279,7 @@ const Parcel = make('Parcel', 'parcels', {
     enum: ['pending', 'accepted', 'received', 'loaded', 'arrived', 'delivered', 'cancelled', 'rejected', 'issue'],
     default: 'pending',
   },
-  payStatus: { type: String, enum: ['unpaid', 'pending_review', 'paid'], default: 'unpaid' },
-  payMethod: { type: String, default: null }, // transfer | cash
+  payMethod: { type: String, default: null }, // cash | transfer: the fee is paid at the office when the goods are received
   paidAmount: { type: Number, default: 0 },
   refundedAmount: { type: Number, default: 0 },
   rejectReason: { type: String, default: null },
@@ -295,7 +290,6 @@ const Parcel = make('Parcel', 'parcels', {
   arrivedAt: { type: Date, default: null },
   deliveredAt: { type: Date, default: null },
   commitAccepted: { type: Boolean, default: false },
-  bankSnapshot: { type: Mixed, default: null },
   policySnapshot: { type: Mixed, default: null },
   internalNotes: { type: Mixed, default: [] },
   search: { type: String, default: '' },
@@ -308,53 +302,13 @@ const Parcel = make('Parcel', 'parcels', {
   [{ tripId: 1 }, {}],
 ]);
 
-/** Transfer receipt photo of a booking or a parcel. The bytes live in `files` (private). */
-const PaymentProof = make('PaymentProof', 'payment_proofs', {
-  _id: String,
-  orderType: { type: String, enum: ['booking', 'parcel'], required: true },
-  orderId: { type: String, required: true },
-  orderCode: String,
-  accountId: { type: String, default: null },
-  fileId: { type: String, required: true },
-  contentHash: { type: String, required: true },
-  mime: String,
-  sizeBytes: Number,
-  amount: { type: Number, default: 0 },
-  note: { type: String, default: '' },
-  status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
-  uploadedAt: { type: Date, default: Date.now },
-  reviewedBy: { type: String, default: null },
-  reviewedAt: { type: Date, default: null },
-  rejectReason: { type: String, default: null },
-  tripId: { type: String, default: null },
-  departAt: { type: Date, default: null },
-}, [
-  [{ status: 1, uploadedAt: 1 }, {}],
-  [{ orderType: 1, orderId: 1 }, {}],
-  [{ contentHash: 1 }, {}],
-]);
-
-/** Private file bytes (payment proofs only). Never served publicly: signed short-lived links. */
-const FileObject = make('FileObject', 'files', {
-  _id: String,
-  ownerAccountId: { type: String, default: null },
-  kind: { type: String, default: 'proof' },
-  mime: String,
-  sizeBytes: Number,
-  sha256: String,
-  data: Buffer,
-  deleteAfter: { type: Date, default: null },
-  deletedAt: { type: Date, default: null },
-  createdAt: { type: Date, default: Date.now },
-}, [[{ deleteAfter: 1 }, {}], [{ ownerAccountId: 1 }, {}]]);
-
-/** Money received, recorded in the app: approved proof, cash, direct transfer, or a free (comp) seat. */
+/** Money received, recorded in the app: cash or direct transfer collected at the counter, or a free (comp) seat. */
 const PaymentRecord = make('PaymentRecord', 'payment_records', {
   _id: String,
   orderType: { type: String, enum: ['booking', 'parcel'], required: true },
   orderId: { type: String, required: true },
   source: { type: String, default: 'app' },
-  method: { type: String, enum: ['proof', 'cash', 'transfer', 'free'], required: true },
+  method: { type: String, enum: ['cash', 'transfer', 'free'], required: true },
   amount: { type: Number, default: 0 },
   compValue: { type: Number, default: 0 },
   reason: { type: String, default: null },
@@ -377,7 +331,6 @@ const Refund = make('Refund', 'refunds', {
   amount: { type: Number, required: true },
   reason: { type: String, default: 'cancel' },
   status: { type: String, enum: ['pending', 'recorded'], default: 'pending' },
-  refundAccount: { type: Mixed, default: null },
   tripId: String,
   routeId: String,
   note: { type: String, default: '' },
@@ -401,14 +354,14 @@ const OrderEvent = make('OrderEvent', 'order_events', {
   internal: { type: Boolean, default: false },
 }, [[{ orderType: 1, orderId: 1, at: 1 }, {}]]);
 
-/** Customer requests on a booking: cancel, change seat, change trip, refund (after losing a seat). */
+/** Customer request on a confirmed booking: cancel (the admin approves it and records the refund). */
 const OrderRequest = make('OrderRequest', 'order_requests', {
   _id: String,
   orderType: { type: String, default: 'booking' },
   orderId: { type: String, required: true },
   orderCode: String,
   accountId: { type: String, default: null },
-  type: { type: String, enum: ['cancel', 'change_seat', 'change_trip', 'refund'], required: true },
+  type: { type: String, enum: ['cancel'], required: true },
   status: { type: String, enum: ['pending', 'approved', 'rejected', 'withdrawn'], default: 'pending' },
   payload: { type: Mixed, default: {} },
   priceDiff: { type: Number, default: 0 },
@@ -548,6 +501,13 @@ const Referral = make('Referral', 'referrals', {
   createdAt: { type: Date, default: Date.now },
 }, [[{ referredAccountId: 1 }, { unique: true }], [{ referrerAccountId: 1 }, {}]]);
 
+const FavoriteRoute = make('FavoriteRoute', 'favorite_routes', {
+  _id: String,
+  accountId: { type: String, required: true },
+  routeId: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now },
+}, [[{ accountId: 1, routeId: 1 }, { unique: true }]]);
+
 const Waitlist = make('Waitlist', 'waitlist', {
   _id: String,
   tripId: { type: String, required: true },
@@ -562,9 +522,9 @@ const Waitlist = make('Waitlist', 'waitlist', {
 module.exports = {
   Account, Session, PasswordReset, Receipt, RateHit, Setting,
   TripSeries, Trip, TripSeat, TripLog,
-  Booking, Parcel, PaymentProof, FileObject, PaymentRecord, Refund, OrderEvent, OrderRequest,
+  Booking, Parcel, PaymentRecord, Refund, OrderEvent, OrderRequest,
   Notification, Message, Review, Report, Complaint, ContactMessage, AdminAction,
-  LoyaltyEntry, Voucher, Referral, Waitlist,
+  LoyaltyEntry, Voucher, Referral, Waitlist, FavoriteRoute,
 };
 
 // Catalog tables declared as resources (offices, vehicles, routes, staff, promotions...).

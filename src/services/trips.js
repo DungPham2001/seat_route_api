@@ -18,8 +18,8 @@ const config = require('../config');
 
 const { Trip, TripSeat, TripSeries, Route, Vehicle, SeatLayout, StaffMember, StaffSchedule, Booking, Parcel, OrderEvent, Review } = models;
 
-const HOLDING = ['pending_review', 'info_requested', 'seat_lost', 'confirmed', 'completed'];
-const ACTIVE = ['awaiting_payment', 'pending_review', 'info_requested', 'seat_lost', 'confirmed', 'rejected', 'expired'];
+const HOLDING = ['pending', 'confirmed', 'cancel_requested', 'completed']; // bookings that hold seats of the trip
+const ACTIVE = ['pending', 'confirmed', 'cancel_requested', 'rejected']; // bookings that stop a trip from being deleted
 
 // ---------- seat stats & status ----------
 
@@ -29,7 +29,7 @@ async function seatStats(tripIds) {
     { $group: { _id: { t: '$tripId', s: '$state' }, n: { $sum: 1 }, classes: { $addToSet: '$seatClass' } } },
   ]);
   const map = new Map();
-  for (const id of tripIds) map.set(id, { total: 0, free: 0, claimed: 0, sold: 0, locked: 0, classes: [] });
+  for (const id of tripIds) map.set(id, { total: 0, free: 0, pending: 0, sold: 0, locked: 0, classes: [] });
   for (const r of rows) {
     const m = map.get(r._id.t);
     m[r._id.s] += r.n;
@@ -47,14 +47,6 @@ function saleStatus(trip, free, now = new Date()) {
   return 'open';
 }
 
-/** "n people are choosing this seat" = unexpired bookings without a receipt that contain the seat (34). */
-async function selectingCounts(tripId, excludeAccountId = null) {
-  const match = { tripId, status: 'awaiting_payment', payDeadline: { $gt: new Date() } };
-  if (excludeAccountId) match.customerAccountId = { $ne: excludeAccountId };
-  const rows = await Booking.aggregate([{ $match: match }, { $unwind: '$seats' }, { $group: { _id: '$seats.seatId', n: { $sum: 1 } } }]);
-  return new Map(rows.map((r) => [r._id, r.n]));
-}
-
 // ---------- presenters ----------
 
 async function lookups(trips) {
@@ -69,7 +61,7 @@ async function lookups(trips) {
 
 async function presentMany(trips, { admin = false, expandOffices = false } = {}) {
   if (!trips.length) return [];
-  const [lk, stats, seatClasses] = await Promise.all([lookups(trips), seatStats(trips.map((t) => t._id)), settings.get('seatClasses')]);
+  const [lk, stats] = await Promise.all([lookups(trips), seatStats(trips.map((t) => t._id))]);
   const seasonalCache = new Map();
   const out = [];
   for (const t of trips) {
@@ -98,10 +90,12 @@ async function presentMany(trips, { admin = false, expandOffices = false } = {})
       vehicle: vehicle ? { kindLabel: vehicle.kindLabel, seatCount: vehicle.seatCount, colorText: vehicle.colorText || '', amenities: vehicle.amenities || [] } : null,
       seats: { total: st.total, free: st.free },
       basePrice: t.basePrice,
-      minPrice: pricing.minPrice(t, classes, seatClasses.items, seasonal),
+      frontSurcharge: t.frontSurcharge || 0,
+      vipSurcharge: t.vipSurcharge || 0,
+      minPrice: pricing.minPrice(t, classes, null, seasonal),
       prices: classes.map((c) => {
-        const p = pricing.classPrice(t, c, seatClasses.items, seasonal);
-        return { seatClass: c, name: seatClasses.items.find((x) => x.code === c)?.name || c, seatPrice: p.seatPrice, surcharge: p.surcharge, total: p.seatPrice + p.surcharge };
+        const p = pricing.classPrice(t, c, null, seasonal);
+        return { seatClass: c, name: pricing.CLASS_NAMES[c] || c, seatPrice: p.seatPrice, surcharge: p.surcharge, total: p.seatPrice + p.surcharge };
       }),
       shuttleEnabled: route ? route.shuttleEnabled !== false : false,
       parcelEnabled: route ? !!route.parcelEnabled : false,
@@ -119,8 +113,8 @@ async function presentMany(trips, { admin = false, expandOffices = false } = {})
         vehicle: vehicle ? { id: vehicle._id, plateNo: vehicle.plateNo, kindLabel: vehicle.kindLabel, seatCount: vehicle.seatCount, status: vehicle.status } : null,
         driverId: t.driverId,
         driver: driver ? { id: driver._id, name: driver.name, phone: driver.phone || '' } : null,
-        seats: { total: st.total, free: st.free, claimed: st.claimed, sold: st.sold, locked: st.locked },
-        fillPercent: st.total ? Math.round(((st.sold + st.claimed) / st.total) * 100) : 0,
+        seats: { total: st.total, free: st.free, pending: st.pending, sold: st.sold, locked: st.locked },
+        fillPercent: st.total ? Math.round(((st.sold + st.pending) / st.total) * 100) : 0,
         needsVehicle: !t.vehicleId,
         needsDriver: !t.driverId,
         prices: t.prices || [],
@@ -166,7 +160,7 @@ async function search(query) {
   const [start, end] = T.dayRange(date);
   const raw = await Trip.find({ routeId: { $in: routes.map((r) => r._id) }, departAt: { $gte: start, $lt: end }, status: 'scheduled' }).sort({ departAt: 1 }).lean();
   let items = await presentMany(raw, { expandOffices: true });
-  items = items.filter((t) => ['open', 'sold_out', 'not_open'].includes(t.status));
+  items = items.filter((t) => ['open', 'sold_out'].includes(t.status)); // closed (inside the lead window) and not yet open trips are hidden
 
   const facets = {
     vehicleKinds: [...new Set(items.map((t) => t.vehicle?.kindLabel).filter(Boolean))],
@@ -210,9 +204,8 @@ async function detail(id, { admin = false } = {}) {
     operator: { name: all.operator.name, phone: all.operator.phone, ...rating },
     cancelPolicy: { tiers: all.cancelPolicy.tiers, cancelFee: all.cancelPolicy.cancelFee, changeAllowedHoursBefore: all.cancelPolicy.changeAllowedHoursBefore, changeFee: all.cancelPolicy.changeFee, note: all.cancelPolicy.note },
     rules: all.rules.items,
-    childRule: all.child,
     shuttleRule: { registerHoursBefore: all.shuttle.registerHoursBefore, feeRefundable: all.shuttle.feeRefundable, note: all.shuttle.note, deadline: iso(T.addMinutes(trip.departAt, -all.shuttle.registerHoursBefore * 60)) },
-    seatRule: 'first_receipt_wins',
+    bookingRule: { leadHours: all.system.bookingLeadHours, maxSeats: all.system.maxSeatsPerBooking, daysAhead: all.system.bookDaysAhead },
   };
 }
 
@@ -220,12 +213,7 @@ async function detail(id, { admin = false } = {}) {
 async function seatMap(id, auth) {
   const trip = await loadTrip(id);
   const admin = auth?.role === 'admin';
-  const [seats, counts, seatClasses, seasonal] = await Promise.all([
-    TripSeat.find({ tripId: id }).lean(),
-    selectingCounts(id, admin ? null : auth?.accountId),
-    settings.get('seatClasses'),
-    pricing.seasonalFor(trip),
-  ]);
+  const [seats, seasonal] = await Promise.all([TripSeat.find({ tripId: id }).lean(), pricing.seasonalFor(trip)]);
   let mine = new Set();
   let bookings = new Map();
   if (admin) {
@@ -242,13 +230,12 @@ async function seatMap(id, auth) {
     status: saleStatus(trip, free),
     layout: { rows: trip.layout?.rows || 0, cols: trip.layout?.cols || 0, name: trip.layout?.name || '' },
     seats: seats.sort((a, b) => a.row - b.row || a.col - b.col).map((s) => {
-      const p = pricing.classPrice(trip, s.seatClass, seatClasses.items, seasonal);
+      const p = pricing.classPrice(trip, s.seatClass, null, seasonal);
       const out = {
         seatId: s.seatId, label: s.label, row: s.row, col: s.col, seatClass: s.seatClass,
-        seatClassName: seatClasses.items.find((x) => x.code === s.seatClass)?.name || s.seatClass,
+        seatClassName: pricing.CLASS_NAMES[s.seatClass] || s.seatClass,
         seatPrice: p.seatPrice, surcharge: p.surcharge, total: p.seatPrice + p.surcharge,
         state: s.isSellable ? s.state : 'unsellable',
-        selectingCount: s.state === 'free' ? counts.get(s.seatId) || 0 : 0,
         isMine: mine.has(s.seatId),
       };
       if (admin) {
@@ -261,7 +248,7 @@ async function seatMap(id, auth) {
       }
       return out;
     }),
-    counts: { free, claimed: seats.filter((s) => s.state === 'claimed').length, sold: seats.filter((s) => s.state === 'sold').length, locked: seats.filter((s) => s.isSellable && s.state === 'locked').length },
+    counts: { free, pending: seats.filter((s) => s.state === 'pending').length, sold: seats.filter((s) => s.state === 'sold').length, locked: seats.filter((s) => s.isSellable && s.state === 'locked').length },
   };
 }
 
@@ -313,6 +300,7 @@ async function assertSchedulable({ tripId, vehicleId, driverId, departAt, durati
     const v = await Vehicle.findById(vehicleId).lean();
     if (!v) throw invalid([{ field: 'vehicleId', code: 'not_found' }]);
     if (v.status !== 'active') throw conflict('vehicle_inactive');
+    if (v.type !== 'limo') throw invalid([{ field: 'vehicleId', code: 'shuttle_not_assignable' }]);
   }
   const driverIssue = await checkDriver(driverId, date);
   const conflicts = await findConflicts({ tripId, vehicleId, driverId, departAt, durationMinutes });
@@ -350,6 +338,7 @@ async function seatDocs(tripId, layout) {
 async function insertTrip(input, auth) {
   const route = input.route || (await Route.findById(input.routeId).lean());
   const vehicle = input.vehicleId ? await Vehicle.findById(input.vehicleId).lean() : null;
+  if (vehicle && vehicle.type === 'shuttle') throw invalid([{ field: 'vehicleId', code: 'shuttle_not_assignable' }]);
   const layoutId = vehicle?.layoutId || input.layoutId;
   const layout = layoutId ? await SeatLayout.findById(layoutId).lean() : null;
   if (!layout) throw invalid([{ field: input.vehicleId ? 'vehicleId' : 'layoutId', code: 'layout_required' }]);
@@ -361,9 +350,10 @@ async function insertTrip(input, auth) {
   const trip = {
     _id: uuid(), routeId: route._id, vehicleId: vehicle?._id || null, driverId: input.driverId || vehicle?.defaultDriverId || null,
     departAt, date: input.date, departTime: input.departTime, durationMinutes: route.durationMinutes, status: 'scheduled', salesClosed: false,
-    salesOpenAt: input.salesOpenAt || T.addMinutes(departAt, -sys.salesOpenDaysBefore * 1440),
-    salesCloseAt: input.salesCloseAt || T.addMinutes(departAt, -sys.salesCloseMinutesBefore),
+    salesOpenAt: input.salesOpenAt || T.addMinutes(departAt, -sys.bookDaysAhead * 1440),
+    salesCloseAt: input.salesCloseAt || T.addMinutes(departAt, -sys.bookingLeadHours * 60),
     seriesId: input.seriesId || null, basePrice: input.basePrice ?? route.basePrice ?? 0, prices: input.prices || [],
+    frontSurcharge: input.frontSurcharge ?? vehicle?.frontSurcharge ?? 0, vipSurcharge: input.vipSurcharge ?? vehicle?.vipSurcharge ?? 0,
     layout: { layoutId: layout._id, name: layout.name, rows: layout.rows, cols: layout.cols },
     seatCount: (layout.seats || []).filter((s) => s.isSellable !== false).length,
     parcelCapacity: capacity, parcelLoad: { kg: 0, pieces: 0 },
@@ -385,6 +375,8 @@ async function create(auth, body) {
   const layoutId = c.id(body, 'layoutId');
   const driverId = c.id(body, 'driverId');
   const basePrice = c.money(body, 'basePrice');
+  const frontSurcharge = c.money(body, 'frontSurcharge');
+  const vipSurcharge = c.money(body, 'vipSurcharge');
   const prices = readPrices(c, body);
   const salesOpenAt = c.datetime(body, 'salesOpenAt');
   const salesCloseAt = c.datetime(body, 'salesCloseAt');
@@ -393,25 +385,43 @@ async function create(auth, body) {
   const note = c.str(body, 'note', { max: 1000 });
   const force = c.bool(body, 'force', { def: false });
   const overrideReason = c.str(body, 'overrideReason', { max: 300 });
+  const rawRepeat = c.arr(body, 'repeatWeekdays', { max: 7 });
+  const repeat = Array.isArray(rawRepeat) ? [...new Set(rawRepeat.map((x, i) => c.int({ v: x }, 'v', { field: `repeatWeekdays[${i}]`, max: 6 })))].filter((x) => x !== undefined) : [];
   c.done();
   if (!vehicleId && !layoutId) throw invalid([{ field: 'vehicleId', code: 'required' }]);
   const route = await Route.findById(routeId).lean();
   if (!route) throw invalid([{ field: 'routeId', code: 'not_found' }]);
   const departAt = T.localToUtc(date, departTime);
   const reason = await assertSchedulable({ vehicleId, driverId, departAt, durationMinutes: route.durationMinutes, date, force, overrideReason });
-  const trip = await insertTrip({ route, routeId, date, departTime, vehicleId, layoutId, driverId, basePrice, prices, salesOpenAt, salesCloseAt, parcelCapacity, driverPay, note, overrideReason: reason }, auth);
-  return (await presentMany([trip], { admin: true }))[0];
+  const base = { route, routeId, departTime, vehicleId, layoutId, driverId, basePrice, frontSurcharge, vipSurcharge, prices, parcelCapacity, driverPay, note };
+  const trip = await insertTrip({ ...base, date, salesOpenAt, salesCloseAt, overrideReason: reason }, auth);
+  // "Repeat on these weekdays": the same trip on the following 4 weeks; days where the vehicle or driver clash are skipped.
+  let repeatedTrips = 0;
+  const skipped = [];
+  for (let d = T.addDays(date, 1); repeat.length && d <= T.addDays(date, 28); d = T.addDays(d, 1)) {
+    if (!repeat.includes(T.weekday(d))) continue;
+    try {
+      await assertSchedulable({ vehicleId, driverId, departAt: T.localToUtc(d, departTime), durationMinutes: route.durationMinutes, date: d, force: false });
+      await insertTrip({ ...base, date: d }, auth);
+      repeatedTrips += 1;
+    } catch {
+      skipped.push(d);
+    }
+  }
+  return { ...(await presentMany([trip], { admin: true }))[0], ...(repeat.length ? { repeatedTrips, skippedDates: skipped } : {}) };
 }
 
 /** PATCH /manage/trips/:id: time, prices (new bookings only, 161), sales window, capacity, driver pay, note, salesClosed. */
 async function update(auth, id, body) {
   const trip = await loadTrip(id);
-  if (['completed', 'cancelled'].includes(trip.status)) throw conflict('invalid_status');
+  if (['running', 'completed', 'cancelled'].includes(trip.status)) throw conflict('invalid_status');
   const c = new Checker();
   const set = {};
   const date = c.date(body, 'date');
   const departTime = c.time(body, 'departTime');
   const basePrice = c.money(body, 'basePrice');
+  const frontSurcharge = c.money(body, 'frontSurcharge');
+  const vipSurcharge = c.money(body, 'vipSurcharge');
   const prices = readPrices(c, body);
   const salesOpenAt = c.datetime(body, 'salesOpenAt');
   const salesCloseAt = c.datetime(body, 'salesCloseAt');
@@ -435,6 +445,8 @@ async function update(auth, id, body) {
     }
   }
   if (basePrice !== undefined) set.basePrice = basePrice;
+  if (frontSurcharge !== undefined) set.frontSurcharge = frontSurcharge;
+  if (vipSurcharge !== undefined) set.vipSurcharge = vipSurcharge;
   if (prices !== undefined) set.prices = prices;
   if (salesOpenAt !== undefined) set.salesOpenAt = salesOpenAt;
   if (salesCloseAt !== undefined) set.salesCloseAt = salesCloseAt;
@@ -477,12 +489,12 @@ async function setDriver(auth, id, body) {
 }
 
 /**
- * PUT /manage/trips/:id/vehicle { vehicleId, force?, overrideReason? } (166). Seats already claimed/sold/locked by
+ * PUT /manage/trips/:id/vehicle { vehicleId, force?, overrideReason? } (166). Only a vehicle with the same seat layout; seats held by
  * bookings must exist (same seat id) in the new layout; otherwise 409 seats_mismatch with the missing seats.
  */
 async function setVehicle(auth, id, body) {
   const trip = await loadTrip(id);
-  if (['completed', 'cancelled'].includes(trip.status)) throw conflict('invalid_status');
+  if (['running', 'completed', 'cancelled'].includes(trip.status)) throw conflict('invalid_status');
   const c = new Checker();
   const vehicleId = c.id(body, 'vehicleId', { required: true });
   const force = c.bool(body, 'force', { def: false });
@@ -490,23 +502,22 @@ async function setVehicle(auth, id, body) {
   c.done();
   const reason = await assertSchedulable({ tripId: id, vehicleId, departAt: trip.departAt, durationMinutes: trip.durationMinutes, date: trip.date, force, overrideReason });
   const vehicle = await Vehicle.findById(vehicleId).lean();
+  if (vehicle.type !== 'limo') throw invalid([{ field: 'vehicleId', code: 'shuttle_not_assignable' }]);
   const layout = await SeatLayout.findById(vehicle.layoutId).lean();
-  const newSeats = new Map((layout?.seats || []).map((s) => [s.id, s]));
+  // Only a vehicle with the same seat layout (label, row, column, class, sellable) can take over a trip.
+  const sig = (x) => `${x.row}:${x.col}:${x.seatClass || 'standard'}:${x.isSellable !== false}`;
   const current = await TripSeat.find({ tripId: id }).lean();
-  const used = current.filter((s) => s.bookingId);
-  const missing = used.filter((s) => !newSeats.get(s.seatId) || newSeats.get(s.seatId).isSellable === false).map((s) => s.seatId);
-  if (missing.length) throw conflict('seats_mismatch', { missingSeats: missing });
-  const keep = new Map(used.map((s) => [s.seatId, s]));
-  const docs = (await seatDocs(id, layout)).map((d) => {
-    const k = keep.get(d.seatId);
-    return k ? { ...d, state: k.state, bookingId: k.bookingId, bookingSeatId: k.bookingSeatId, claimedAt: k.claimedAt, lockReason: k.lockReason } : d;
-  });
-  await TripSeat.deleteMany({ tripId: id });
-  await TripSeat.insertMany(docs);
+  const have = new Map(current.map((x) => [x.seatId, x]));
+  const mismatch = [];
+  for (const st of layout?.seats || []) {
+    const cur = have.get(st.id);
+    if (!cur || cur.label !== st.label || sig(cur) !== sig(st)) mismatch.push(st.id);
+  }
+  for (const cur of current) if (!(layout?.seats || []).some((x) => x.id === cur.seatId)) mismatch.push(cur.seatId);
+  if (mismatch.length) throw conflict('seats_mismatch', { missingSeats: [...new Set(mismatch)] });
   await Trip.updateOne({ _id: id }, {
     $set: {
-      vehicleId, layout: { layoutId: layout._id, name: layout.name, rows: layout.rows, cols: layout.cols }, seatCount: docs.filter((d) => d.isSellable).length,
-      overrideReason: reason || trip.overrideReason, updatedAt: new Date(),
+      vehicleId, overrideReason: reason || trip.overrideReason, updatedAt: new Date(),
       ...(trip.parcelCapacity ? {} : vehicle.parcelMaxKg ? { parcelCapacity: { maxKg: vehicle.parcelMaxKg, maxPieces: vehicle.parcelMaxPieces || 0 } } : {}),
     },
   });
@@ -526,6 +537,7 @@ async function setStatus(auth, id, body) {
   const status = c.oneOf(body, 'status', ['scheduled', 'running', 'completed'], { required: true });
   c.done();
   const allowed = { scheduled: ['running'], running: ['scheduled', 'completed'], completed: [], cancelled: [] };
+  if (trip.status === 'running' && status === 'scheduled') { /* allowed: undo a wrong departure */ }
   if (trip.status === status) return (await presentMany([trip], { admin: true }))[0];
   if (!allowed[trip.status].includes(status) && !(trip.status === 'scheduled' && status === 'completed')) throw conflict('invalid_status');
   const set = { status, updatedAt: new Date() };
@@ -562,7 +574,7 @@ async function cancel(auth, id, body) {
   // Parcels on this trip go back to "accepted" without a trip, to be put on another trip.
   const parcels = await Parcel.find({ tripId: id, status: { $in: ['accepted', 'received'] } }).lean();
   for (const p of parcels) await require('./parcels').detachFromTrip(auth, p, reason);
-  await TripSeat.updateMany({ tripId: id, state: { $in: ['free', 'claimed', 'sold'] } }, { $set: { state: 'locked', lockReason: 'trip_cancelled' } });
+  await TripSeat.updateMany({ tripId: id, state: { $in: ['free', 'pending', 'sold'] } }, { $set: { state: 'locked', lockReason: 'trip_cancelled' } });
   await OrderEvent.create({ _id: uuid(), orderType: 'trip', orderId: id, byAccountId: auth.accountId, byRole: 'admin', kind: 'cancelled', note: reason, internal: true });
   return { trip: (await presentMany([await loadTrip(id)], { admin: true }))[0], cancelledBookings: cancelled, movedBookings: moved, detachedParcels: parcels.length };
 }
@@ -721,8 +733,8 @@ async function mergeSuggestions(query) {
       if (a.routeId !== b.routeId) continue;
       const gap = Math.abs(new Date(b.departAt) - new Date(a.departAt)) / 60000;
       if (gap > 120) continue;
-      const usedA = a.seats.sold + a.seats.claimed;
-      const usedB = b.seats.sold + b.seats.claimed;
+      const usedA = a.seats.sold + a.seats.pending;
+      const usedB = b.seats.sold + b.seats.pending;
       pairs.push({ tripA: a, tripB: b, gapMinutes: Math.round(gap), combinedPassengers: usedA + usedB, fitsInA: usedA + usedB <= a.seats.total, fitsInB: usedA + usedB <= b.seats.total });
     }
   }
@@ -802,7 +814,7 @@ async function createSeries(auth, body) {
 /** Trips of the series in the future that have no booking (safe to change or delete). */
 async function freeFutureTrips(seriesId) {
   const rows = await Trip.find({ seriesId, departAt: { $gt: new Date() }, status: 'scheduled' }).lean();
-  const busy = new Set(await Booking.distinct('tripId', { tripId: { $in: rows.map((t) => t._id) }, status: { $nin: ['cancelled', 'expired'] } }));
+  const busy = new Set(await Booking.distinct('tripId', { tripId: { $in: rows.map((t) => t._id) }, status: { $nin: ['cancelled', 'rejected'] } }));
   const parcelBusy = new Set(await Parcel.distinct('tripId', { tripId: { $in: rows.map((t) => t._id) } }));
   return { free: rows.filter((t) => !busy.has(t._id) && !parcelBusy.has(t._id)), kept: rows.filter((t) => busy.has(t._id) || parcelBusy.has(t._id)) };
 }
@@ -849,7 +861,7 @@ async function addException(auth, id, body) {
   c.done();
   const trip = await Trip.findOne({ seriesId: id, date }).lean();
   if (trip) {
-    const hasOrders = await Booking.exists({ tripId: trip._id, status: { $nin: ['cancelled', 'expired'] } });
+    const hasOrders = await Booking.exists({ tripId: trip._id, status: { $nin: ['cancelled', 'rejected'] } });
     if (hasOrders) throw conflict('trip_has_bookings', { tripId: trip._id });
     if (type === 'skip') await deleteTrips([trip]);
     else await update(auth, trip._id, { departTime: newDepartTime, force: true, overrideReason: note || 'series exception' });
@@ -883,14 +895,14 @@ async function extendAllSeries() {
 /** Trip delete: only when nothing was ever booked on it. */
 async function remove(auth, id) {
   const trip = await loadTrip(id);
-  if (await Booking.exists({ tripId: id })) throw conflict('trip_has_bookings');
+  if (await Booking.exists({ tripId: id, status: { $nin: ['cancelled', 'rejected'] } })) throw conflict('trip_has_bookings');
   if (await Parcel.exists({ tripId: id })) throw conflict('trip_has_bookings');
   await deleteTrips([trip]);
   await Review.deleteMany({ tripId: id });
 }
 
 module.exports = {
-  HOLDING, seatStats, saleStatus, selectingCounts, presentMany, loadTrip, search, detail, seatMap, alternatives,
+  HOLDING, ACTIVE, seatStats, saleStatus, presentMany, loadTrip, search, detail, seatMap, alternatives,
   findConflicts, create, update, setDriver, setVehicle, setStatus, cancel, movePassengers, adminList, adminDetail, presentLog,
   lockSeat, driverSuggestions, mergeSuggestions, createSeries, updateSeries, deleteSeries, addException, listSeries, getSeries,
   generateSeries, extendAllSeries, remove, insertTrip,

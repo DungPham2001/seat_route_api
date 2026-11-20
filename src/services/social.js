@@ -10,7 +10,7 @@ const notify = require('./notify');
 const audit = require('./audit');
 const { paging, page } = require('../resources/engine');
 
-const { Review, Report, Complaint, Message, ContactMessage, Waitlist, Booking, Parcel, Account, Trip, TripSeat } = models;
+const { Review, Report, Complaint, Message, ContactMessage, Waitlist, Booking, Parcel, Account, Trip, TripSeat, Route, Province, FavoriteRoute } = models;
 
 /** "Phạm Văn Dũng" -> "Dũng P." for public reviews. */
 const maskName = (n) => {
@@ -405,7 +405,42 @@ async function waitlistSeatFreed(tripId) {
   if (trip) await notify.push(first.accountId, 'trip', 'waitlist_available', { refType: 'trip', refId: tripId, params: await notify.tripParams(trip) });
 }
 
+// ---------- favourite and recent routes ("Đặt nhanh") ----------
+
+async function routeCards(routeIds) {
+  const routes = await Route.find({ _id: { $in: routeIds } }).lean();
+  const pv = new Map((await Province.find({ _id: { $in: routes.flatMap((r) => [r.fromProvinceId, r.toProvinceId]) } }).lean()).map((p) => [p._id, p.name]));
+  return new Map(routes.map((r) => [r._id, { routeId: r._id, name: r.name, status: r.status, fromProvinceId: r.fromProvinceId, fromProvinceName: pv.get(r.fromProvinceId) || '', toProvinceId: r.toProvinceId, toProvinceName: pv.get(r.toProvinceId) || '' }]));
+}
+
+async function favoriteRoutes(auth) {
+  const rows = await FavoriteRoute.find({ accountId: auth.accountId }).sort({ createdAt: 1 }).lean();
+  const cards = await routeCards(rows.map((f) => f.routeId));
+  return { items: rows.map((f) => cards.get(f.routeId)).filter(Boolean) };
+}
+
+async function addFavoriteRoute(auth, routeId) {
+  if (!(await Route.exists({ _id: routeId }))) throw notFound();
+  if ((await FavoriteRoute.countDocuments({ accountId: auth.accountId })) >= 50) throw conflict('limit_reached');
+  await FavoriteRoute.updateOne({ accountId: auth.accountId, routeId }, { $setOnInsert: { _id: uuid(), createdAt: new Date() } }, { upsert: true });
+  return (await favoriteRoutes(auth));
+}
+
+async function removeFavoriteRoute(auth, routeId) {
+  await FavoriteRoute.deleteOne({ accountId: auth.accountId, routeId });
+}
+
+/** The last routes this customer booked, newest first, with the offices they used. */
+async function recentRoutes(auth) {
+  const rows = await Booking.find({ customerAccountId: auth.accountId }).sort({ createdAt: -1 }).limit(30).select('routeId pickupOfficeId dropOfficeId createdAt').lean();
+  const seen = new Set();
+  const picks = rows.filter((b) => (seen.has(b.routeId) ? false : seen.add(b.routeId))).slice(0, 5);
+  const cards = await routeCards(picks.map((b) => b.routeId));
+  return { items: picks.map((b) => cards.get(b.routeId) && { ...cards.get(b.routeId), pickupOfficeId: b.pickupOfficeId, dropOfficeId: b.dropOfficeId, lastBookedAt: iso(b.createdAt) }).filter(Boolean) };
+}
+
 module.exports = {
+  favoriteRoutes, addFavoriteRoute, removeFavoriteRoute, recentRoutes,
   maskName, createReview, updateReview, deleteReview, myReviews, publicReviews, adminReviews, replyReview, setReviewStatus,
   createReport, adminReports, resolveReport, createComplaint, listComplaints, getComplaint, replyComplaint,
   listMessages, sendMessage, adminInbox, createContact, listContacts, replyContact,

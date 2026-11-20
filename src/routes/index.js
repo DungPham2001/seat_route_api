@@ -1,5 +1,5 @@
 /**
- * /v1 routes. Public: health, auth, web deletion (JSON), signed files, cron. Everything else needs a token;
+ * /v1 routes. Public: health, auth, web deletion (JSON), cron. Everything else needs a token;
  * customer-only routes are in customer.js, admin-only (/manage, /admin and review actions) in manage.js.
  */
 const express = require('express');
@@ -13,7 +13,7 @@ const notify = require('../services/notify');
 const catalog = require('../services/catalog');
 const trips = require('../services/trips');
 const bookings = require('../services/bookings');
-const proofs = require('../services/proofs');
+const settings = require('../services/settings');
 const social = require('../services/social');
 const parcels = require('../services/parcels');
 const jobs = require('../services/jobs');
@@ -51,16 +51,6 @@ r.post('/auth/forgot', h(async (req, res) => res.status(202).json(await accounts
 r.post('/auth/reset', noContent(async (req) => accounts.reset(req.body, { lang: req.lang })));
 r.post('/account-deletion', noContent(async (req) => accounts.deleteByCredentials(req.body)));
 
-/** Signed short-lived link to a receipt photo (no bearer: image views cannot send one). */
-r.get('/files/:id', h(async (req, res) => {
-  const f = await proofs.serveFile(req.params.id, req.query);
-  res.setHeader('Content-Type', f.mime); // raw header: no charset on an image
-  res.setHeader('Cache-Control', 'private, max-age=60');
-  res.setHeader('Content-Disposition', 'inline');
-  res.setHeader('Content-Length', f.data.length);
-  res.end(f.data);
-}));
-
 r.get('/jobs/run', h(async (req, res) => {
   if (config.cronSecret) {
     const m = /^Bearer\s+(\S+)$/i.exec(req.get('authorization') || '');
@@ -74,11 +64,13 @@ r.get('/jobs/run', h(async (req, res) => {
 r.use(authenticate);
 
 r.post('/auth/change-password', h(async (req, res) => res.json(await accounts.changePassword(req.auth, req.body, { lang: req.lang }))));
-r.get('/me', h(async (req, res) => res.json({ ...(await accounts.profile(req.auth.account)), mustChangePassword: !!req.auth.account.mustChangePassword })));
+r.get('/me', h(async (req, res) => res.json(await accounts.profile(req.auth.account))));
 r.patch('/me', h(async (req, res) => res.json(await accounts.updateMe(req.auth, req.body))));
 r.delete('/me', noContent(async (req) => accounts.deleteAccount(req.auth.account, req.body?.password)));
-r.get('/devices', h(async (req, res) => res.json(await accounts.listDevices(req.auth))));
-r.delete('/devices/:id', noContent(async (req) => accounts.removeDevice(req.auth, req.params.id)));
+for (const base of ['/devices', '/me/devices']) {
+  r.get(base, h(async (req, res) => res.json(await accounts.listDevices(req.auth))));
+  r.delete(`${base}/:id`, noContent(async (req) => accounts.removeDevice(req.auth, req.params.id)));
+}
 
 r.get('/notifications', h(async (req, res) => res.json(await notify.list(req.auth, req.query, req.lang))));
 r.get('/notifications/unread-count', h(async (req, res) => res.json(await notify.unreadCounts(req.auth.accountId))));
@@ -86,7 +78,10 @@ r.post('/notifications/read', h(async (req, res) => res.json(await notify.markRe
 r.delete('/notifications/:id', noContent(async (req) => notify.remove(req.auth, req.params.id)));
 
 r.get('/operator', h(async (_req, res) => res.json(await catalog.operator())));
-r.get('/banks', (_req, res) => res.json(catalog.banks()));
+r.get('/cancel-policy', h(async (_req, res) => {
+  const [cp, rules] = await Promise.all([settings.get('cancelPolicy'), settings.get('rules')]);
+  res.json({ tiers: cp.tiers, cancelFee: cp.cancelFee, changeAllowedHoursBefore: cp.changeAllowedHoursBefore, note: cp.note, rules: rules.items });
+}));
 r.get('/provinces', h(async (req, res) => res.json(await catalog.provinces(req.query))));
 r.get('/provinces/:id/offices', h(async (req, res) => res.json(await catalog.provinceOffices(req.params.id, req.query))));
 r.get('/offices', h(async (_req, res) => res.json(await catalog.allOffices())));
@@ -112,7 +107,6 @@ r.get('/bookings/:id/share-text', h(async (req, res) => res.json({ text: await b
 r.get('/bookings/:id/messages', h(async (req, res) => res.json(await social.listMessages(req.auth, req.params.id))));
 r.post('/bookings/:id/messages', h(async (req, res) => res.status(201).json(await social.sendMessage(req.auth, req.params.id, req.body))));
 r.patch('/bookings/:id/shuttle', h(async (req, res) => res.json(await bookings.updateShuttle(req.auth, req.params.id, req.body))));
-r.get('/proofs/:id', h(async (req, res) => res.json(await proofs.get(req.auth, req.params.id))));
 r.get('/parcels', h(async (req, res) => res.json(await parcels.list(req.auth, req.query))));
 r.get('/parcels/config', h(async (_req, res) => res.json(await parcels.getConfig())));
 r.post('/parcels/quote', h(async (req, res) => res.json(await parcels.quote(req.body))));

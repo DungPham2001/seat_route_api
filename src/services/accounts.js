@@ -32,7 +32,6 @@ function presentAccount(a) {
     role: a.role,
     status: a.status,
     preferredLanguage: a.preferredLanguage,
-    mustChangePassword: !!a.mustChangePassword,
     birthDate: a.birthDate || null,
     gender: a.gender || null,
     avatarColor: a.avatarColor || COLORS[0],
@@ -69,7 +68,7 @@ async function newReferralCode() {
 /** POST /v1/auth/register (customers only). Idempotent by `idempotencyKey` / Idempotency-Key. */
 async function register(body, { lang, idempotencyKey: headerKey }) {
   const c = new Checker();
-  const email = c.email(body, 'email', { required: true });
+  const email = c.email(body, 'email') || null; // optional: a customer can sign up with just a phone number
   const plain = c.password(body, 'password');
   const displayName = c.str(body, 'displayName', { required: true, max: 60 });
   const rawPhone = c.phone(body, 'phone', { required: true });
@@ -86,11 +85,11 @@ async function register(body, { lang, idempotencyKey: headerKey }) {
     const receipt = await Receipt.findById(`register|${sha256(idemKey)}`).lean();
     if (receipt) {
       const account = await loadAccount(receipt.result.accountId);
-      if (!account || account.email !== email || !(await password.verify(plain, account.passwordHash))) throw conflict('email_taken');
+      if (!account || (account.email || null) !== email || !(await password.verify(plain, account.passwordHash))) throw conflict('phone_taken');
       return { status: 200, body: { ...(await profile(account)), tokens: await tokens.openSession(account, device) } };
     }
   }
-  if (await Account.exists({ email })) throw conflict('email_taken');
+  if (email && (await Account.exists({ email }))) throw conflict('email_taken');
   await assertPhoneFree(phone);
 
   let referrer = null;
@@ -102,8 +101,8 @@ async function register(body, { lang, idempotencyKey: headerKey }) {
   const now = new Date();
   const doc = {
     _id: uuid(), email, passwordHash, displayName, phone, role: 'customer', preferredLanguage, status: 'active',
-    mustChangePassword: false, avatarColor: COLORS[Math.floor(Math.random() * COLORS.length)], referralCode: await newReferralCode(),
-    preferences: { notifyPromo: true, notifyNews: true, fontScale: 'medium', shuttleDefault: false }, termsAcceptedAt: now, passwordChangedAt: now, createdAt: now, updatedAt: now,
+    avatarColor: COLORS[Math.floor(Math.random() * COLORS.length)], referralCode: await newReferralCode(),
+    termsAcceptedAt: now, passwordChangedAt: now, createdAt: now, updatedAt: now,
   };
   doc.search = searchOf(doc);
   try {
@@ -122,6 +121,7 @@ async function register(body, { lang, idempotencyKey: headerKey }) {
     if (err.code === 11000) throw dupError(err);
     throw err;
   }
+  await require('./loyalty').welcomeVoucher(doc._id).catch(() => {}); // CHAOBAN (10%) in the new wallet
   return { status: 201, body: { ...(await profile(doc)), tokens: await tokens.openSession(doc, device) } };
 }
 
@@ -169,7 +169,7 @@ async function login(body) {
   if (account.status === 'suspended') throw new AppError(403, 'account_suspended', { reason: account.suspendReason || null });
   Account.updateOne({ _id: account._id }, { $set: { lastLoginAt: new Date() } }).catch(() => {});
   const t = await tokens.openSession(account, device);
-  return { ...(await profile(account)), mustChangePassword: !!account.mustChangePassword, tokens: t };
+  return { ...(await profile(account)), tokens: t };
 }
 
 async function refresh(body) {
@@ -195,7 +195,11 @@ async function logout(body, auth) {
 
 // ---------- password ----------
 
-/** POST /v1/auth/forgot { login (email or phone) } — always 202 (does not reveal whether the account exists). The code goes to the account's email. */
+/**
+ * POST /v1/auth/forgot { login (email or phone) } — always 202 (does not reveal whether the account exists).
+ * An account with an email gets the reset code by email; an account with only a phone number creates a message in the
+ * admin's contact inbox ("call back to verify, then give a temporary password").
+ */
 async function forgot(body, { lang }) {
   const c = new Checker();
   const id = readLogin(c, body);
@@ -205,6 +209,10 @@ async function forgot(body, { lang }) {
   if (n > 3) return out;
   const account = await Account.findOne(loginFilter(id)).lean();
   if (!account) return out;
+  if (!account.email) {
+    await models.ContactMessage.create({ _id: uuid(), accountId: account._id, subject: 'password_reset', text: `Yêu cầu cấp lại mật khẩu cho SĐT ${account.phone}. Hãy gọi lại để xác minh và cấp mật khẩu tạm.`, status: 'open', createdAt: new Date() });
+    return out;
+  }
   const code = humanCode(8);
   await PasswordReset.updateMany({ accountId: account._id, usedAt: null }, { $set: { usedAt: new Date() } });
   await PasswordReset.create({ _id: uuid(), accountId: account._id, codeHash: sha256(code), expiresAt: new Date(Date.now() + config.resetCodeSec * 1000) });
@@ -229,7 +237,7 @@ async function reset(body, { lang } = {}) {
   const passwordHash = await password.hash(plain);
   const account = await Account.findOneAndUpdate(
     { _id: r.accountId },
-    { $set: { passwordHash, passwordChangedAt: now, mustChangePassword: false, updatedAt: now } },
+    { $set: { passwordHash, passwordChangedAt: now } },
     { new: true },
   ).lean();
   await tokens.revoke({ accountId: r.accountId }, 'password_reset');
@@ -248,7 +256,7 @@ async function confirmPassword(account, plain, field = 'password') {
   await attempts.clearFailures('confirm', account._id);
 }
 
-/** POST /v1/auth/change-password — other devices are signed out; clears mustChangePassword. */
+/** POST /v1/auth/change-password — other devices are signed out. */
 async function changePassword(auth, body, { lang } = {}) {
   const c = new Checker();
   const oldPassword = c.secret(body, 'oldPassword');
@@ -257,7 +265,7 @@ async function changePassword(auth, body, { lang } = {}) {
   await confirmPassword(auth.account, oldPassword, 'oldPassword');
   if (oldPassword === plain) throw invalid([{ field: 'newPassword', code: 'same_as_old' }]);
   const now = new Date();
-  await Account.updateOne({ _id: auth.accountId }, { $set: { passwordHash: await password.hash(plain), passwordChangedAt: now, mustChangePassword: false, updatedAt: now } });
+  await Account.updateOne({ _id: auth.accountId }, { $set: { passwordHash: await password.hash(plain), passwordChangedAt: now } });
   const r = await tokens.revoke({ accountId: auth.accountId, _id: { $ne: auth.sessionId } }, 'password_changed');
   await mailer.sendPasswordChanged(auth.account, { via: 'change', deviceName: auth.deviceName, lang });
   return { status: 'ok', revokedSessions: r.modifiedCount || 0, account: presentAccount(await loadAccount(auth.accountId)) };
@@ -304,60 +312,6 @@ async function updateMe(auth, body) {
   return profile(await loadAccount(auth.accountId));
 }
 
-// Single saved objects in Profile: preferences (85, 103, 104), refund account (88), emergency contact (89).
-
-function readPreferences(c, b) {
-  const o = {};
-  for (const k of ['defaultPickupOfficeId', 'defaultDropOfficeId']) if (b[k] !== undefined) o[k] = c.id(b, k) || null;
-  if (b.seatPref !== undefined) o.seatPref = c.oneOf(b, 'seatPref', ['any', 'front', 'window', 'aisle', 'back']) || 'any';
-  for (const k of ['shuttleDefault', 'notifyPromo', 'notifyNews']) if (b[k] !== undefined) o[k] = c.bool(b, k, { required: true });
-  if (b.fontScale !== undefined) o.fontScale = c.oneOf(b, 'fontScale', ['small', 'medium', 'large'], { required: true });
-  if (b.theme !== undefined) o.theme = c.oneOf(b, 'theme', ['system', 'light', 'dark'], { required: true });
-  return o;
-}
-
-const SINGLES = {
-  preferences: {
-    read: readPreferences,
-    def: { defaultPickupOfficeId: null, defaultDropOfficeId: null, seatPref: 'any', shuttleDefault: false, notifyPromo: true, notifyNews: true, fontScale: 'medium', theme: 'system' },
-    merge: true,
-  },
-  refundAccount: {
-    read: (c, b) => ({
-      holderName: (c.str(b, 'holderName', { required: true, max: 80 }) || '').toUpperCase(),
-      accountNo: c.str(b, 'accountNo', { required: true, max: 30, pattern: /^[0-9A-Za-z]{4,30}$/ }),
-      bankName: c.str(b, 'bankName', { required: true, max: 120 }),
-      bankCode: c.str(b, 'bankCode', { max: 20 }) || null,
-    }),
-    def: null,
-  },
-  emergencyContact: {
-    read: (c, b) => ({ name: c.str(b, 'name', { required: true, max: 80 }), phone: c.phone(b, 'phone', { required: true }), relation: c.str(b, 'relation', { max: 40 }) || '' }),
-    def: null,
-  },
-};
-
-const getSingle = (auth, key) => {
-  const s = SINGLES[key];
-  const v = auth.account[key];
-  return s.merge ? { ...s.def, ...(v || {}) } : v || s.def;
-};
-
-async function putSingle(auth, key, body) {
-  const s = SINGLES[key];
-  const c = new Checker();
-  if (body === null || typeof body !== 'object') throw invalid([{ field: 'body', code: 'invalid_type' }]);
-  const v = s.read(c, body);
-  c.done();
-  const value = s.merge ? { ...(auth.account[key] || {}), ...v } : v;
-  await Account.updateOne({ _id: auth.accountId }, { $set: { [key]: value, updatedAt: new Date() } });
-  return s.merge ? { ...s.def, ...value } : value;
-}
-
-async function deleteSingle(auth, key) {
-  await Account.updateOne({ _id: auth.accountId }, { $set: { [key]: null, updatedAt: new Date() } });
-}
-
 // ---------- deletion (112, 260) ----------
 
 async function deleteAccount(account, plain) {
@@ -375,10 +329,10 @@ async function deleteAccount(account, plain) {
 
 async function deleteByCredentials(body) {
   const c = new Checker();
-  const email = c.email(body, 'email', { required: true });
+  const id = readLogin(c, body);
   const plain = c.secret(body, 'password');
   c.done();
-  const account = await checkCredentials(email, plain);
+  const account = await checkCredentials(id, plain);
   await deleteAccount(account, plain);
 }
 
@@ -398,7 +352,7 @@ async function removeDevice(auth, id) {
 
 // ---------- admins (256) ----------
 
-const tempPassword = () => `${randomToken(9).replace(/[-_]/g, 'x')}7a`;
+const tempPassword = () => `Tp${randomToken(9).replace(/[-_]/g, 'x')}7a`; // always upper + lower + digit
 
 async function listAdmins() {
   const rows = await Account.find({ role: 'admin' }).sort({ createdAt: 1 }).lean();
@@ -419,7 +373,7 @@ async function createAdmin(auth, body) {
   const now = new Date();
   const doc = {
     _id: uuid(), email, passwordHash: await password.hash(plain), displayName, phone: adminPhone, role: 'admin',
-    preferredLanguage: 'vi', status: 'active', mustChangePassword: true, passwordChangedAt: now, createdAt: now, updatedAt: now,
+    preferredLanguage: 'vi', status: 'active', passwordChangedAt: now, createdAt: now, updatedAt: now,
   };
   doc.search = searchOf(doc);
   await Account.create(doc);
@@ -442,7 +396,7 @@ async function resetAdminPassword(auth, id) {
   const target = await Account.findOne({ _id: id, role: 'admin' }).lean();
   if (!target) throw notFound();
   const plain = tempPassword();
-  await Account.updateOne({ _id: id }, { $set: { passwordHash: await password.hash(plain), mustChangePassword: true, passwordChangedAt: new Date(), updatedAt: new Date() } });
+  await Account.updateOne({ _id: id }, { $set: { passwordHash: await password.hash(plain), passwordChangedAt: new Date(), updatedAt: new Date() } });
   await tokens.revoke({ accountId: id }, 'password_reset');
   await require('./audit').log(auth, 'account', id, 'admin_password_reset', target.email);
   return { temporaryPassword: plain };
@@ -450,6 +404,6 @@ async function resetAdminPassword(auth, id) {
 
 module.exports = {
   presentAccount, profile, register, login, refresh, logout, forgot, reset, changePassword, confirmPassword, updateMe,
-  getSingle, putSingle, deleteSingle, SINGLES, deleteAccount, deleteByCredentials, listDevices, removeDevice,
-  listAdmins, createAdmin, revokeAdmin, resetAdminPassword, tempPassword, searchOf, newReferralCode, COLORS,
+  deleteAccount, deleteByCredentials, listDevices, removeDevice,
+  listAdmins, createAdmin, revokeAdmin, resetAdminPassword, tempPassword, searchOf, newReferralCode, COLORS, assertPhoneFree, dupError,
 };

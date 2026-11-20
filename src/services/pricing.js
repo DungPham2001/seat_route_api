@@ -1,10 +1,10 @@
 /**
- * One price engine for booking, the quick price calculator (46) and admin bookings (40, 41, 160, 161, 187, 228, 229):
- *   total = seat prices (+ seasonal) + seat-class surcharges - child discount + shuttle fees - promo - points.
+ * One price engine for booking, the order summary (quote) and counter bookings:
+ *   total = seat prices (+ seasonal) + seat-class surcharges (front / vip, from the vehicle) + shuttle fees - promo code.
  * Computed once at the end; the order-level discount is spread over seats with the remainder on the last seat
  * so that the seat lines always add up to the total.
  */
-const { Promotion, SeasonalPrice, Voucher, Booking, ShuttleZone, LoyaltyEntry } = require('../models');
+const { Promotion, SeasonalPrice, Voucher, Booking, ShuttleZone } = require('../models');
 const { AppError, invalid } = require('../lib/errors');
 const settings = require('./settings');
 const { officeStop, officeTime } = require('./routes');
@@ -22,10 +22,13 @@ function applySeasonal(price, rows) {
   return Math.max(0, p);
 }
 
-/** Price of one seat class on a trip: { seatPrice, surcharge }. */
-function classPrice(trip, seatClass, seatClasses, seasonal) {
+/** Seat classes: standard, front (hàng đầu) and vip. The surcharge of front / vip is copied from the vehicle onto the trip. */
+const CLASS_NAMES = { standard: 'Ghế thường', front: 'Hàng đầu', vip: 'Ghế VIP' };
+
+/** Price of one seat class on a trip: { seatPrice, surcharge }. Booked prices are stored in the booking and never change. */
+function classPrice(trip, seatClass, _unused, seasonal) {
   const base = (trip.prices || []).find((p) => p.seatClass === seatClass)?.price ?? trip.basePrice;
-  const surcharge = seatClasses.find((c) => c.code === seatClass)?.surcharge || 0;
+  const surcharge = seatClass === 'front' ? trip.frontSurcharge || 0 : seatClass === 'vip' ? trip.vipSurcharge || 0 : 0;
   return { seatPrice: applySeasonal(base, seasonal), surcharge };
 }
 
@@ -52,7 +55,7 @@ async function checkPromo(code, { accountId, subtotal, routeId, now = new Date()
   if (accountId) {
     voucher = await Voucher.findOne({ accountId, promotionId: promo._id, status: 'active' }).lean();
     if (promo.audience === 'wallet' && !voucher) throw promoError('promo_invalid');
-    const used = await Booking.countDocuments({ customerAccountId: accountId, promotionId: promo._id, status: { $nin: ['cancelled', 'expired'] } });
+    const used = await Booking.countDocuments({ customerAccountId: accountId, promotionId: promo._id, status: { $nin: ['cancelled', 'rejected'] } });
     if (used >= (promo.perUserLimit || 1)) throw promoError('promo_used_up');
   } else if (promo.audience === 'wallet') throw promoError('promo_invalid');
   return { promo, voucher };
@@ -62,11 +65,6 @@ function promoDiscount(promo, subtotal) {
   let d = promo.kind === 'percent' ? Math.round((subtotal * promo.value) / 100) : promo.value;
   if (promo.maxDiscount) d = Math.min(d, promo.maxDiscount);
   return Math.max(0, Math.min(d, subtotal));
-}
-
-async function pointsBalance(accountId) {
-  const r = await LoyaltyEntry.aggregate([{ $match: { accountId } }, { $group: { _id: null, p: { $sum: '$points' } } }]);
-  return r[0]?.p || 0;
 }
 
 /**
@@ -118,18 +116,16 @@ function readShuttle(c, body, key) {
  * @param {string|null} p.accountId
  * @param {{seatPrice:number}|null} p.override  admin special price per seat (133)
  */
-async function quote({ trip, seats, pickupShuttle, dropShuttle, promoCode, usePoints = 0, accountId = null, override = null }) {
-  const [seatClasses, child, loyalty, seasonal] = await Promise.all([settings.get('seatClasses'), settings.get('child'), settings.get('loyalty'), seasonalFor(trip)]);
+async function quote({ trip, seats, pickupShuttle, dropShuttle, promoCode, accountId = null, override = null }) {
+  const seasonal = await seasonalFor(trip);
   const lines = seats.map((s) => {
-    const p = override ? { seatPrice: override.seatPrice, surcharge: 0 } : classPrice(trip, s.seatClass, seatClasses.items, seasonal);
-    const childDiscount = !override && s.isChild && child.enabled ? Math.round((p.seatPrice * (child.discountPercent || 0)) / 100) : 0;
-    return { seatId: s.seatId, label: s.label, seatClass: s.seatClass, isChild: !!s.isChild, seatPrice: p.seatPrice, surcharge: p.surcharge, childDiscount, lineAmount: p.seatPrice + p.surcharge - childDiscount };
+    const p = override ? { seatPrice: override.seatPrice, surcharge: 0 } : classPrice(trip, s.seatClass, null, seasonal);
+    return { seatId: s.seatId, label: s.label, seatClass: s.seatClass, seatPrice: p.seatPrice, surcharge: p.surcharge, lineAmount: p.seatPrice + p.surcharge };
   });
   const seatsAmount = lines.reduce((t, l) => t + l.seatPrice, 0);
   const surchargeAmount = lines.reduce((t, l) => t + l.surcharge, 0);
-  const childDiscount = lines.reduce((t, l) => t + l.childDiscount, 0);
   const shuttleAmount = (pickupShuttle?.fee || 0) + (dropShuttle?.fee || 0);
-  const subtotal = seatsAmount + surchargeAmount - childDiscount + shuttleAmount;
+  const subtotal = seatsAmount + surchargeAmount + shuttleAmount;
 
   let promo = null;
   let voucher = null;
@@ -138,18 +134,7 @@ async function quote({ trip, seats, pickupShuttle, dropShuttle, promoCode, usePo
     ({ promo, voucher } = await checkPromo(promoCode, { accountId, subtotal, routeId: trip.routeId }));
     promoAmount = promoDiscount(promo, subtotal);
   }
-
-  let pointsUsed = 0;
-  let pointsAmount = 0;
-  if (usePoints > 0) {
-    if (!loyalty.enabled || !accountId) throw invalid([{ field: 'usePoints', code: 'not_allowed' }]);
-    const balance = await pointsBalance(accountId);
-    if (usePoints > balance) throw new AppError(409, 'points_insufficient', { balance });
-    const cap = Math.min(Math.floor((subtotal * loyalty.maxRedeemPercent) / 100), subtotal - promoAmount);
-    pointsUsed = Math.min(usePoints, Math.floor(cap / Math.max(1, loyalty.redeemValuePerPoint)));
-    pointsAmount = pointsUsed * loyalty.redeemValuePerPoint;
-  }
-  const discountAmount = promoAmount + pointsAmount;
+  const discountAmount = promoAmount;
   const totalAmount = Math.max(0, subtotal - discountAmount);
 
   // Spread the order discount over the seat lines (shuttle fees stay whole): remainder on the last seat.
@@ -165,14 +150,12 @@ async function quote({ trip, seats, pickupShuttle, dropShuttle, promoCode, usePo
   return {
     lines,
     amounts: {
-      seatsAmount, surchargeAmount, childDiscount, shuttleAmount, subtotal,
-      promoDiscount: promoAmount, pointsDiscount: pointsAmount, discountAmount, totalAmount,
+      seatsAmount, surchargeAmount, shuttleAmount, subtotal, promoDiscount: promoAmount, discountAmount, totalAmount,
       seasonalApplied: seasonal.map((s) => ({ id: s._id, name: s.name, adjustKind: s.adjustKind, adjustValue: s.adjustValue })),
     },
     promo: promo ? { id: promo._id, code: promo.code, title: promo.title || '', kind: promo.kind, value: promo.value } : null,
     voucherId: voucher?._id || null,
-    pointsUsed,
   };
 }
 
-module.exports = { quote, classPrice, minPrice, seasonalFor, applySeasonal, checkPromo, promoDiscount, shuttleFor, readShuttle, pointsBalance };
+module.exports = { quote, classPrice, minPrice, seasonalFor, applySeasonal, checkPromo, promoDiscount, shuttleFor, readShuttle, CLASS_NAMES };

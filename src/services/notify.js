@@ -14,7 +14,7 @@ const PARAM_WORDS = {
   en: { cancel: 'cancel', change_seat: 'seat change', change_trip: 'trip change', refund: 'refund', pickup: 'pickup', drop: 'drop-off' },
 };
 
-const ACTIVE = ['awaiting_payment', 'pending_review', 'info_requested', 'seat_lost', 'confirmed', 'rejected'];
+const ACTIVE = ['pending', 'confirmed', 'cancel_requested'];
 
 async function push(accountId, category, kind, { refType = null, refId = null, params = {} } = {}) {
   if (!accountId) return null;
@@ -58,11 +58,10 @@ async function officeClosed(office) {
   }
 }
 
-/** Announcement fan-out to customers who did not turn that group off (104). */
+/** Announcement / promo fan-out to every active customer (the app hides the groups the customer turned off). */
 async function announcement(doc) {
   const promo = doc.kind === 'promo';
-  const pref = promo ? 'preferences.notifyPromo' : 'preferences.notifyNews';
-  const rows = await Account.find({ role: 'customer', status: 'active', [pref]: { $ne: false } }).select('_id').lean();
+  const rows = await Account.find({ role: 'customer', status: 'active' }).select('_id').lean();
   return pushMany(rows.map((a) => a._id), promo ? 'promo' : 'system', 'announcement', { refType: 'announcement', refId: doc._id, params: { title: doc.title, body: doc.body } });
 }
 

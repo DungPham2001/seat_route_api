@@ -50,22 +50,21 @@ const api = {
   del: (p, body, token) => request(app).delete(`/v1/${p}`).set(bearer(token)).send(body || {}),
 };
 
-const PASSWORD = 'matkhau123';
+const PASSWORD = 'Matkhau123';
 
 const expectOk = (res, status = 200) => {
   if (res.status !== status) throw new Error(`${res.req?.method} ${res.req?.path} -> ${res.status} ${JSON.stringify(res.body)}`);
   return res.body;
 };
 
-/** Default admin as created by db:init (mustChangePassword), then signed in and password changed. */
+/** An admin as created by db:init, signed in. */
 async function adminToken() {
   const email = 'admin@seatroute.test';
   await models.Account.create({
-    _id: uuid(), email, passwordHash: await password.hash('TamThoi123'), displayName: 'Admin', role: 'admin', preferredLanguage: 'vi',
-    status: 'active', mustChangePassword: true, search: 'admin', createdAt: new Date(), updatedAt: new Date(),
+    _id: uuid(), email, passwordHash: await password.hash(PASSWORD), displayName: 'Admin', role: 'admin', preferredLanguage: 'vi',
+    status: 'active', search: 'admin', createdAt: new Date(), updatedAt: new Date(),
   });
-  const login = expectOk(await api.post('auth/login', { email, password: 'TamThoi123', deviceName: 'Admin phone' }));
-  expectOk(await api.post('auth/change-password', { oldPassword: 'TamThoi123', newPassword: PASSWORD }, login.tokens.accessToken));
+  const login = expectOk(await api.post('auth/login', { email, password: PASSWORD, deviceName: 'Admin phone' }));
   return { token: login.tokens.accessToken, login };
 }
 
@@ -75,12 +74,11 @@ async function customer(email = 'khach@example.com', name = 'Nguyễn Văn An', 
 }
 
 /**
- * Builds a small operator through the admin API: bank, 2 provinces, 2 offices each, shuttle zone, 9-seat layout,
+ * Builds a small operator through the admin API: 2 provinces, 2 offices each, shuttle zone, 9-seat layout,
  * vehicle, driver, route Hà Nội -> Thái Bình, one trip tomorrow 07:30 at 250 000đ.
  */
 async function world(admin) {
   expectOk(await api.put('admin/operator', { name: 'Nhà xe Test', phone: '0241234567', address: 'Hà Nội' }, admin));
-  expectOk(await api.put('admin/bank-info', { bankCode: 'VCB', accountNo: '0123456789', holderName: 'Cong ty Test' }, admin));
   const hn = expectOk(await api.post('admin/provinces', { name: 'Hà Nội', sortOrder: 1 }, admin), 201);
   const tb = expectOk(await api.post('admin/provinces', { name: 'Thái Bình', sortOrder: 2 }, admin), 201);
   const o1 = expectOk(await api.post('manage/offices', { provinceId: hn.id, name: 'VP Mỹ Đình', address: '1 Mỹ Đình', phone: '0241111111' }, admin), 201);
@@ -100,13 +98,4 @@ async function world(admin) {
   return { hn, tb, o1, o2, o3, zone, layout, driver, vehicle, route, trip, date };
 }
 
-/** A small valid-looking JPEG: SOI, APP0 (JFIF), APP1 (Exif with a fake GPS string), SOS, data, EOI. */
-function jpeg(seed = 1) {
-  const app0 = Buffer.concat([Buffer.from([0xff, 0xe0, 0x00, 0x10]), Buffer.from('JFIF\0\x01\x01\0\0\x01\0\x01\0\0', 'binary')]);
-  const exif = Buffer.from('Exif\0\0GPS 21.0285 105.8542');
-  const app1 = Buffer.concat([Buffer.from([0xff, 0xe1]), Buffer.from([0, exif.length + 2]), exif]);
-  const data = Buffer.alloc(3000, seed);
-  return Buffer.concat([Buffer.from([0xff, 0xd8]), app0, app1, Buffer.from([0xff, 0xda, 0x00, 0x02]), data, Buffer.from([0xff, 0xd9])]);
-}
-
-module.exports = { start, stop, reset, api, app, request, models, PASSWORD, expectOk, adminToken, customer, world, jpeg, noAccent };
+module.exports = { start, stop, reset, api, app, request, models, PASSWORD, expectOk, adminToken, customer, world, noAccent };

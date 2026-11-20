@@ -1,12 +1,11 @@
 /**
- * Singleton settings of the one operator (OperatorProfile, BankInfo, CancelPolicyTier, OperatorRule, Setting,
+ * Singleton settings of the one operator (OperatorProfile, CancelPolicyTier, OperatorRule, Setting,
  * MemberTier...). Each key is one document in `settings`; reads merge stored values over defaults.
  */
 const config = require('../config');
 const { Setting } = require('../models');
 const { Checker } = require('../lib/validate');
 const { invalid, notFound } = require('../lib/errors');
-const { bankByCode } = require('../lib/banks');
 const { iso } = require('../lib/util');
 
 const D = config.defaults;
@@ -16,43 +15,33 @@ const DEFAULTS = {
     name: '', description: '', phone: '', email: '', address: '', openText: '',
     representativeName: '', licenseNoText: '', website: '',
   },
-  bank: { bankCode: null, accountNo: '', holderName: '' },
   cancelPolicy: {
-    tiers: [{ hoursBefore: 24, refundPercent: 90 }, { hoursBefore: 4, refundPercent: 50 }, { hoursBefore: 0, refundPercent: 0 }],
-    cancelFee: 0,
+    tiers: [{ hoursBefore: 24, refundPercent: 100 }, { hoursBefore: 6, refundPercent: 70 }, { hoursBefore: 2, refundPercent: 50 }, { hoursBefore: 0, refundPercent: 0 }],
+    cancelFee: 10000,
     changeAllowedHoursBefore: 4,
     changeFee: 0,
     note: '',
   },
   rules: { items: [] }, // [{ kind: luggage|food|pets|children|other, text }]
   system: {
-    payDeadlineMinutes: D.payDeadlineMinutes,
+    bookingLeadHours: D.bookingLeadHours,
+    maxSeatsPerBooking: D.maxSeatsPerBooking,
+    bookDaysAhead: D.bookDaysAhead,
     reviewDeadlineMinutes: D.reviewDeadlineMinutes,
-    maxProofBytes: D.maxProofBytes,
-    proofRetentionDays: D.proofRetentionDays,
     driverRestMinutes: D.driverRestMinutes,
     salesOpenDaysBefore: D.salesOpenDaysBefore,
     salesCloseMinutesBefore: D.salesCloseMinutesBefore,
     lowFillPercent: 30,
   },
   shuttle: { registerHoursBefore: D.shuttleRegisterHoursBefore, feeRefundable: D.shuttleFeeRefundable, note: '' },
-  seatClasses: {
-    items: [
-      { code: 'standard', name: 'Ghế thường', surcharge: 0 },
-      { code: 'front', name: 'Hàng đầu', surcharge: 0 },
-      { code: 'vip', name: 'Ghế VIP', surcharge: 0 },
-    ],
-  },
-  child: { enabled: true, maxAge: 10, discountPercent: 0, note: 'Trẻ em dưới 5 tuổi ngồi cùng người lớn không tính vé' },
   loyalty: {
     enabled: true,
-    earnPointsPer10k: 1,
-    redeemValuePerPoint: 500,
-    maxRedeemPercent: 20,
+    earnPointsPer10k: 1, // points = total / 10000 when the booking is approved; never converted to cash
     tiers: [
       { name: 'Thành viên', minPoints: 0, benefitText: '' },
-      { name: 'Bạc', minPoints: 300, benefitText: '' },
-      { name: 'Vàng', minPoints: 1000, benefitText: '' },
+      { name: 'Bạc', minPoints: 80, benefitText: '' },
+      { name: 'Vàng', minPoints: 200, benefitText: '' },
+      { name: 'Kim cương', minPoints: 500, benefitText: '' },
     ],
   },
   referral: { enabled: false, referrerPromotionId: null, referredPromotionId: null, maxPerReferrer: 20 },
@@ -91,16 +80,6 @@ const V = {
     if (b.email !== undefined) o.email = c.email(b, 'email') || '';
     return o;
   },
-  bank(c, b) {
-    const o = {};
-    if (b.bankCode !== undefined) {
-      o.bankCode = c.str(b, 'bankCode', { max: 20 }) || null;
-      if (o.bankCode && !bankByCode(o.bankCode)) c.fail('bankCode', 'invalid_enum');
-    }
-    if (b.accountNo !== undefined) o.accountNo = c.str(b, 'accountNo', { max: 30, pattern: /^[0-9A-Za-z]{4,30}$/ }) || '';
-    if (b.holderName !== undefined) o.holderName = (c.str(b, 'holderName', { max: 80 }) || '').toUpperCase();
-    return o;
-  },
   cancelPolicy(c, b) {
     const o = {};
     if (b.tiers !== undefined) {
@@ -127,8 +106,8 @@ const V = {
   system(c, b) {
     const o = {};
     const ints = {
-      payDeadlineMinutes: [5, 1440], reviewDeadlineMinutes: [5, 2880], maxProofBytes: [100 * 1024, 4 * 1024 * 1024],
-      proofRetentionDays: [1, 3650], driverRestMinutes: [0, 1440], salesOpenDaysBefore: [1, 365], salesCloseMinutesBefore: [0, 1440], lowFillPercent: [0, 100],
+      bookingLeadHours: [0, 72], maxSeatsPerBooking: [1, 16], bookDaysAhead: [1, 60], reviewDeadlineMinutes: [5, 2880],
+      driverRestMinutes: [0, 1440], salesOpenDaysBefore: [1, 365], salesCloseMinutesBefore: [0, 1440], lowFillPercent: [0, 100],
     };
     for (const [k, [min, max]] of Object.entries(ints)) if (b[k] !== undefined) o[k] = c.int(b, k, { required: true, min, max });
     return o;
@@ -140,30 +119,10 @@ const V = {
     if (b.note !== undefined) o.note = c.str(b, 'note', { max: 1000 }) || '';
     return o;
   },
-  seatClasses(c, b) {
-    const arr = c.arr(b, 'items', { required: true, max: 20 }) || [];
-    const items = arr.map((t, i) => ({
-      code: c.str(t, 'code', { field: `items[${i}].code`, required: true, max: 30, pattern: /^[a-z0-9_]+$/ }),
-      name: c.str(t, 'name', { field: `items[${i}].name`, required: true, max: 60 }),
-      surcharge: c.money(t, 'surcharge', { field: `items[${i}].surcharge` }) ?? 0,
-    }));
-    if (!items.some((x) => x.code === 'standard')) c.fail('items', 'standard_required');
-    return { items };
-  },
-  child(c, b) {
-    const o = {};
-    if (b.enabled !== undefined) o.enabled = c.bool(b, 'enabled', { required: true });
-    if (b.maxAge !== undefined) o.maxAge = c.int(b, 'maxAge', { required: true, max: 18 });
-    if (b.discountPercent !== undefined) o.discountPercent = c.int(b, 'discountPercent', { required: true, max: 100 });
-    if (b.note !== undefined) o.note = c.str(b, 'note', { max: 1000 }) || '';
-    return o;
-  },
   loyalty(c, b) {
     const o = {};
     if (b.enabled !== undefined) o.enabled = c.bool(b, 'enabled', { required: true });
     if (b.earnPointsPer10k !== undefined) o.earnPointsPer10k = c.num(b, 'earnPointsPer10k', { required: true, max: 1000 });
-    if (b.redeemValuePerPoint !== undefined) o.redeemValuePerPoint = c.money(b, 'redeemValuePerPoint', { required: true });
-    if (b.maxRedeemPercent !== undefined) o.maxRedeemPercent = c.int(b, 'maxRedeemPercent', { required: true, max: 100 });
     if (b.tiers !== undefined) {
       const arr = c.arr(b, 'tiers', { max: 10 }) || [];
       o.tiers = arr.map((t, i) => ({

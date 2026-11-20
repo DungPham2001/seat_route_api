@@ -6,13 +6,10 @@ const express = require('express');
 const { asyncHandler } = require('../lib/errors');
 const { requireAdmin } = require('../middleware/auth');
 const { resources } = require('../resources/defs');
-const { buildPayload } = require('../lib/vietqr');
-const { bankByCode } = require('../lib/banks');
 const accounts = require('../services/accounts');
 const settings = require('../services/settings');
 const trips = require('../services/trips');
 const bookings = require('../services/bookings');
-const proofs = require('../services/proofs');
 const parcels = require('../services/parcels');
 const social = require('../services/social');
 const loyalty = require('../services/loyalty');
@@ -42,15 +39,15 @@ r.get('/manage/inbox/counts', json(() => dashboard.inboxCounts()));
 r.get('/manage/inbox', json((req) => dashboard.inbox(req.auth, req.query)));
 r.get('/manage/calendar', json((req) => dashboard.calendar(req.query)));
 
-// ---------- receipts (140-146) ----------
-r.get('/manage/proofs', json((req) => proofs.queue(req.query)));
-r.post('/manage/proofs/approve', A, json((req) => proofs.approveMany(req.auth, req.body)));
-r.post('/proofs/:id/approve', A, json((req) => proofs.approve(req.auth, req.params.id, req.body)));
-r.post('/proofs/:id/reject', A, json((req) => proofs.reject(req.auth, req.params.id, req.body)));
-r.post('/proofs/:id/request-info', A, json((req) => proofs.requestInfo(req.auth, req.params.id, req.body)));
-
 // ---------- bookings (130-138, 147-151, 169) ----------
 r.get('/manage/bookings', json((req) => bookings.list(req.auth, req.query)));
+r.post('/manage/bookings/approve', json((req) => bookings.approveMany(req.auth, req.body)));
+r.post('/manage/bookings/:id/approve', json((req) => bookings.approve(req.auth, req.params.id, req.body)));
+r.post('/manage/bookings/:id/reject', json((req) => bookings.reject(req.auth, req.params.id, req.body)));
+r.post('/manage/bookings/:id/collect', json((req) => bookings.collect(req.auth, req.params.id, req.body)));
+r.post('/manage/bookings/:id/approve-cancel', json((req) => bookings.decideCancel(req.auth, req.params.id, req.body, true)));
+r.post('/manage/bookings/:id/reject-cancel', json((req) => bookings.decideCancel(req.auth, req.params.id, req.body, false)));
+r.post('/manage/bookings/:id/reseat', json((req) => bookings.assignSeats(req.auth, req.params.id, { assignments: req.body?.assignments || req.body?.seats, reason: req.body?.reason })));
 r.post('/manage/bookings', json((req) => bookings.adminCreate(req.auth, req.body), 201));
 r.post('/bookings/:id/assign-seats', A, json((req) => bookings.assignSeats(req.auth, req.params.id, req.body)));
 r.post('/bookings/:id/refund', A, json((req) => bookings.refundBooking(req.auth, req.params.id, req.body)));
@@ -121,7 +118,6 @@ r.post('/manage/parcels/:id/accept', json((req) => parcels.accept(req.auth, req.
 r.post('/manage/parcels/:id/reject', json((req) => parcels.reject(req.auth, req.params.id, req.body)));
 r.post('/manage/parcels/:id/status', json((req) => parcels.setStatus(req.auth, req.params.id, req.body)));
 r.post('/manage/parcels/:id/handover', json((req) => parcels.handover(req.auth, req.params.id, req.body)));
-r.post('/manage/parcels/:id/payment', json((req) => parcels.recordPayment(req.auth, req.params.id, req.body)));
 r.post('/manage/parcels/:id/unclaimed', json((req) => parcels.markUnclaimed(req.auth, req.params.id)));
 r.post('/manage/parcels/:id/issue', json((req) => parcels.recordIssue(req.auth, req.params.id, req.body)));
 r.put('/manage/parcels/:id/trip', json((req) => parcels.moveTrip(req.auth, req.params.id, req.body)));
@@ -144,6 +140,7 @@ r.get('/admin/actions', json((req) => audit.list(req.query)));
 
 // ---------- reports & export (240-253, 263) ----------
 const REPORTS = { reconciliation: reports.reconciliation, profit: reports.profit, occupancy: reports.occupancy, revenue: reports.revenue, top: reports.top, rates: reports.rates, parcels: reports.parcels, comps: reports.comps, shuttle: reports.shuttle, forecast: reports.forecast };
+r.get('/manage/revenue', json((req) => reports.revenueSummary(req.query)));
 r.get('/manage/reports/:kind', json((req) => {
   const fn = REPORTS[req.params.kind];
   if (!fn) throw require('../lib/errors').notFound();
@@ -165,18 +162,7 @@ r.put('/admin/settings/:key', json((req) => settings.update(req.params.key, req.
 r.patch('/admin/settings/:key', json((req) => settings.update(req.params.key, req.body, req.auth.accountId)));
 // Aliases from the spec.
 r.put('/admin/operator', json((req) => settings.update('operator', req.body, req.auth.accountId)));
-r.put('/admin/bank-info', json((req) => settings.update('bank', req.body, req.auth.accountId)));
 r.put('/admin/cancel-policy', json((req) => settings.update('cancelPolicy', req.body, req.auth.accountId)));
-/** QR preview / test before using the account for real (204). */
-r.get('/admin/bank-info/preview-qr', json(async (req) => {
-  const bank = await settings.get('bank');
-  const b = bank.bankCode ? bankByCode(bank.bankCode) : null;
-  if (!b || !bank.accountNo) throw require('../lib/errors').conflict('bank_not_configured');
-  const amount = Math.max(0, parseInt(req.query.amount, 10) || 10000);
-  const content = String(req.query.content || 'SRTEST');
-  return { bank: b, accountNo: bank.accountNo, holderName: bank.holderName, amount, transferContent: content, qrPayload: buildPayload({ bin: b.bin, accountNo: bank.accountNo, amount, content }) };
-}));
-
 // ---------- admins (256, 260) ----------
 r.get('/admin/admins', json(() => accounts.listAdmins()));
 r.post('/admin/admins', json((req) => accounts.createAdmin(req.auth, req.body), 201));
@@ -184,10 +170,17 @@ r.post('/admin/admins/:id/revoke', noContent((req) => accounts.revokeAdmin(req.a
 r.delete('/admin/admins/:id', noContent((req) => accounts.revokeAdmin(req.auth, req.params.id)));
 r.post('/admin/admins/:id/reset-password', json((req) => accounts.resetAdminPassword(req.auth, req.params.id)));
 
-// ---------- customers (225, 226) ----------
-r.get('/admin/customers', json((req) => admin.listCustomers(req.query)));
-r.get('/admin/customers/:id', json((req) => admin.getCustomer(req.params.id)));
-r.patch('/admin/customers/:id', json((req) => admin.updateCustomerNote(req.auth, req.params.id, req.body)));
+// ---------- customers (225, 226): /manage/customers is the main path, /admin/customers an alias ----------
+for (const base of ['/manage/customers', '/admin/customers']) {
+  r.get(base, json((req) => admin.listCustomers(req.query)));
+  r.post(base, json((req) => admin.createCustomer(req.auth, req.body), 201));
+  r.get(`${base}/:id`, json((req) => admin.getCustomer(req.params.id)));
+  r.patch(`${base}/:id`, json((req) => admin.updateCustomer(req.auth, req.params.id, req.body)));
+  r.delete(`${base}/:id`, noContent((req) => admin.deleteCustomer(req.auth, req.params.id)));
+  r.post(`${base}/:id/reset-password`, json((req) => admin.resetCustomerPassword(req.auth, req.params.id, req.body)));
+  r.post(`${base}/:id/lock`, json((req) => admin.suspend(req.auth, req.params.id, req.body, true)));
+  r.post(`${base}/:id/unlock`, json((req) => admin.suspend(req.auth, req.params.id, req.body, false)));
+}
 r.post('/admin/accounts/:id/suspend', json((req) => admin.suspend(req.auth, req.params.id, req.body, true)));
 r.post('/admin/accounts/:id/unsuspend', json((req) => admin.suspend(req.auth, req.params.id, req.body, false)));
 
@@ -213,5 +206,13 @@ r.post('/admin/guests/:id/link', json((req) => bookings.linkGuest(req.auth, req.
 for (const res of Object.values(resources)) {
   if (res.role === 'admin') r.use(res.path, A, res.router());
 }
+r.use('/manage/zones', A, resources.shuttleZones.router()); // alias of /manage/shuttle-zones
+for (const [path, key] of [['/manage/staff', 'staff'], ['/manage/promotions', 'promotions'], ['/manage/guests', 'guests']]) r.use(path, A, resources[key].router()); // aliases used by the app document
+r.get('/manage/search', json((req) => admin.search(req.query)));
+r.get('/manage/bookings/export.csv', h(async (req, res) => {
+  const out = await reports.exportCsv({ ...req.query, type: 'bookings' });
+  res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${out.filename}"` });
+  res.send(out.csv);
+}));
 
 module.exports = r;

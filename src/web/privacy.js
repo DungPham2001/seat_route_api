@@ -29,10 +29,9 @@ const content = {
       ['Dữ liệu chúng tôi lưu', [[
         '<strong>Tài khoản:</strong> email, tên, số điện thoại, ngày sinh và giới tính (nếu bạn nhập), ngôn ngữ, mật khẩu (chỉ lưu dạng đã băm bằng bcrypt), thời điểm đồng ý điều khoản.',
         '<strong>Đặt chỗ:</strong> chuyến, ghế, văn phòng lên và xuống xe, tên và số điện thoại từng hành khách, ghi chú, số tiền, mã giảm giá, lịch sử thay đổi của đơn.',
-        '<strong>Ảnh chứng từ chuyển khoản:</strong> ảnh bạn chụp bằng Camera hoặc chọn bằng trình chọn ảnh của hệ thống. Ảnh có thể chứa tên, số tài khoản, ngân hàng, số tiền và thời gian giao dịch. Máy chủ xóa thông tin vị trí và siêu dữ liệu trong ảnh JPEG, lưu ở nơi không công khai và tính dấu vân tay (băm) để cảnh báo ảnh bị dùng lại.',
         '<strong>Xe trung chuyển:</strong> địa chỉ đón hoặc trả bằng chữ do bạn nhập và ghi chú. Ứng dụng không dùng vị trí hay bản đồ.',
         '<strong>Gửi đồ:</strong> tên và số điện thoại người gửi và người nhận, địa chỉ nhận (nếu có), mô tả hàng, cân nặng, giá trị khai báo. Mã nhận hàng chỉ lưu dạng băm.',
-        '<strong>Dữ liệu lưu sẵn trong Profile:</strong> hành khách đi cùng, địa chỉ, sổ người nhận, tài khoản nhận hoàn tiền, liên hệ khẩn cấp, sở thích, tuyến và văn phòng yêu thích.',
+        '<strong>Dữ liệu lưu sẵn trong Profile:</strong> các tuyến yêu thích.',
         '<strong>Nội dung bạn gửi:</strong> đánh giá, tin nhắn trong đơn, khiếu nại, báo cáo vi phạm, liên hệ nhà xe.',
         '<strong>Điểm và mã giảm giá:</strong> sổ điểm, ví mã, mã giới thiệu.',
         '<strong>Phiên đăng nhập:</strong> tên thiết bị, thời điểm đăng nhập và hoạt động gần nhất.',
@@ -46,13 +45,13 @@ const content = {
       ]],
       ['Mục đích sử dụng', [[
         'Tạo tài khoản, đăng nhập, giữ phiên làm việc.',
-        'Đặt chỗ, xếp ghế, xác nhận chứng từ chuyển khoản, xe trung chuyển, gửi đồ, hủy, đổi và hoàn tiền theo chính sách của nhà xe.',
+        'Đặt chỗ, xếp ghế, duyệt đơn, xe trung chuyển, gửi đồ, hủy, đổi và hoàn tiền theo chính sách của nhà xe.',
         'Hiện thông báo trong ứng dụng về đơn, chuyến và gửi đồ; nhà xe có thể gọi điện hoặc nhắn Zalo cho bạn về chuyến đi.',
         'Gửi email cần thiết: mã đặt lại mật khẩu và thông báo đổi mật khẩu. Không gửi email quảng cáo.',
         'Đối soát doanh thu của nhà xe, xử lý khiếu nại và báo cáo vi phạm.',
       ]]],
       ['Ai xem được dữ liệu', [[
-        'Bạn và quản trị viên của nhà xe. Ảnh chứng từ chỉ bạn và quản trị viên xem được, qua liên kết có hạn vài phút. Danh sách hành khách của chuyến chỉ có tên, số điện thoại, ghế, văn phòng; không có email hay chứng từ.',
+        'Bạn và quản trị viên của nhà xe. Danh sách hành khách của chuyến chỉ có tên, số điện thoại, ghế, văn phòng; không có email.',
         'Tài xế không có tài khoản; nhà xe gửi cho tài xế danh sách khách dạng chữ (tên, số điện thoại, ghế, điểm đón, địa chỉ trung chuyển) qua Zalo hoặc ứng dụng khác.',
         'Khách hàng khác chỉ thấy trạng thái ghế, không thấy thông tin người đặt. Đánh giá công khai chỉ hiện tên rút gọn.',
         'Nhà cung cấp hạ tầng xử lý dữ liệu thay chúng tôi: MongoDB Atlas (cơ sở dữ liệu), Vercel (máy chủ API), dịch vụ gửi email. Họ không được dùng dữ liệu cho mục đích riêng.',
@@ -63,9 +62,8 @@ const content = {
       ]],
       ['Thời gian lưu và xóa dữ liệu', [[
         'Dữ liệu tài khoản được giữ trong thời gian tài khoản còn tồn tại.',
-        'Ảnh chứng từ tự xóa sau số ngày nhà xe cấu hình kể từ khi chuyến hoàn thành (mặc định 90 ngày); bạn xem thời hạn đang áp dụng trong Profile &gt; Quyền riêng tư.',
         'Mã đặt lại mật khẩu hết hạn sau 30 phút, phiên đăng nhập tối đa 12 giờ.',
-        `Bạn xóa tài khoản ngay trong ứng dụng (Profile &gt; Quyền riêng tư &gt; Xóa tài khoản) hoặc tại <a href="${base()}/account/delete">trang xóa tài khoản</a>. Máy chủ xóa thật tài khoản, dữ liệu lưu sẵn, ảnh chứng từ, tin nhắn, đánh giá, điểm, mã. Các đơn đã đi chỉ còn số tiền, không còn tên, số điện thoại, địa chỉ, để nhà xe đối soát theo quy định kế toán. Không xóa được khi còn chuyến chưa hoàn thành hoặc khoản hoàn tiền đang chờ.`,
+        `Bạn xóa tài khoản ngay trong ứng dụng (Profile &gt; Quyền riêng tư &gt; Xóa tài khoản) hoặc tại <a href="${base()}/account/delete">trang xóa tài khoản</a>. Máy chủ xóa thật tài khoản, tin nhắn, đánh giá, điểm, mã. Các đơn đã đi chỉ còn số tiền, không còn tên, số điện thoại, địa chỉ, để nhà xe đối soát theo quy định kế toán. Không xóa được khi còn chuyến chưa hoàn thành hoặc khoản hoàn tiền đang chờ.`,
       ]]],
       ['Quyền của bạn', [
         `Bạn có quyền xem dữ liệu (Profile &gt; Quyền riêng tư), sửa, xuất lịch sử đặt chỗ, xóa dữ liệu và rút lại đồng ý bằng cách xóa tài khoản, theo quy định pháp luật về bảo vệ dữ liệu cá nhân. Báo cáo vi phạm được quản trị viên xử lý trong ứng dụng. Mọi yêu cầu khác gửi về ${mail}.`,
@@ -86,10 +84,9 @@ const content = {
       ['Data we store', [[
         '<strong>Account:</strong> email, name, phone number, birth date and gender (if you enter them), language, password (only a bcrypt hash), when you accepted the terms.',
         '<strong>Bookings:</strong> trip, seats, pickup and drop-off offices, each passenger\'s name and phone, notes, amounts, promo codes, booking history.',
-        '<strong>Transfer receipt photos:</strong> taken with the in-app camera or picked with the system photo picker. They may show a name, account number, bank, amount and time. The server removes location and metadata from JPEG photos, stores them privately and hashes them to warn about reused photos.',
         '<strong>Shuttle:</strong> pickup or drop-off address typed as text and notes. No location or map is used.',
         '<strong>Parcels:</strong> sender and receiver names and phones, receiver address (optional), goods description, weight, declared value. The pickup code is stored only as a hash.',
-        '<strong>Saved data in Profile:</strong> travel companions, addresses, receivers, refund bank account, emergency contact, preferences, favourite routes and offices.',
+        '<strong>Saved data in Profile:</strong> favourite routes.',
         '<strong>Content you send:</strong> reviews, booking messages, complaints, reports, contact form.',
         '<strong>Points and vouchers:</strong> points ledger, voucher wallet, referral code.',
         '<strong>Sessions:</strong> device name, sign-in and last activity time.',
@@ -103,13 +100,13 @@ const content = {
       ]],
       ['Why we use it', [[
         'Accounts, sign-in, sessions.',
-        'Bookings, seat assignment, receipt checks, shuttle, parcels, cancellations, changes and refunds under the operator\'s policy.',
+        'Bookings, seat assignment, booking approval, shuttle, parcels, cancellations, changes and refunds under the operator\'s policy.',
         'In-app notifications about bookings, trips and parcels; the operator may call or message you about your trip.',
         'Required emails only: password reset code and password-changed notice.',
         'The operator\'s revenue reconciliation, complaint and report handling.',
       ]]],
       ['Who can see it', [[
-        'You and the operator\'s admins. Receipt photos are shown only to you and the admins, through links valid a few minutes. A trip\'s passenger list has names, phones, seats and offices, never emails or receipts.',
+        'You and the operator\'s admins. A trip\'s passenger list has names, phones, seats and offices, never emails.',
         'Drivers have no account; the operator sends them a plain-text passenger list (names, phones, seats, pickup offices, shuttle addresses).',
         'Other customers only see seat states, never who booked. Public reviews show a shortened name.',
         'Infrastructure providers processing data for us: MongoDB Atlas (database), Vercel (API hosting), an email delivery service. They may not use the data for their own purposes.',
@@ -120,9 +117,8 @@ const content = {
       ]],
       ['Retention and deletion', [[
         'Account data is kept while the account exists.',
-        'Receipt photos are deleted a number of days after the trip is completed, set by the operator (90 days by default); the current value is shown in Profile &gt; Privacy.',
         'Password reset codes expire after 30 minutes, sessions after at most 12 hours.',
-        `Delete your account in the app (Profile &gt; Privacy &gt; Delete account) or on the <a href="${base()}/account/delete">account deletion page</a>. The server really deletes the account, saved data, receipt photos, messages, reviews, points and vouchers. Past bookings keep only their amounts (no name, phone or address) for the operator\'s accounting. Not possible while a trip is not completed or a refund is pending.`,
+        `Delete your account in the app (Profile &gt; Privacy &gt; Delete account) or on the <a href="${base()}/account/delete">account deletion page</a>. The server really deletes the account, messages, reviews, points and vouchers. Past bookings keep only their amounts (no name, phone or address) for the operator\'s accounting. Not possible while a trip is not completed or a refund is pending.`,
       ]]],
       ['Your rights', [
         `You can view your data (Profile &gt; Privacy), edit it, export your booking history, delete it and withdraw consent by deleting your account, under personal data protection law. Reports are handled by the operator\'s admins in the app. Other requests: ${mail}.`,

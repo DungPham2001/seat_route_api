@@ -12,16 +12,15 @@ test('every endpoint answers without a server error', async () => {
   const c = await h.customer();
   const C = c.token;
   h.expectOk(await h.api.post('admin/parcel-rates', { routeId: w.route.id, sizeClass: 'small', maxWeightKg: 10, price: 40000 }, A), 201);
-  const b = h.expectOk(await h.api.post('bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, seats: [{ seatId: 'A1', passengerName: 'An', passengerPhone: '0901234567' }] }, C), 201);
-  await h.request(h.app).post(`/v1/bookings/${b.id}/proofs`).set('Authorization', `Bearer ${C}`).attach('file', h.jpeg(77), 'r.jpg');
+  const b = h.expectOk(await h.api.post('bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, seats: ['A1'] }, C), 201);
   const p = h.expectOk(await h.api.post('parcels', { routeId: w.route.id, date: w.date, fromOfficeId: w.o1.id, toOfficeId: w.o3.id, descriptionText: 'Áo', weightKg: 2, sizeClass: 'small', receiver: { name: 'Hoa', phone: '0977000111' }, commitAccepted: true }, C), 201);
-  const proof = (await h.api.get('manage/proofs', A)).body.items[0];
   const msg = h.expectOk(await h.api.post(`bookings/${b.id}/messages`, { text: 'Cho em gửi thêm vali' }, C), 201);
   h.expectOk(await h.api.post(`bookings/${b.id}/messages`, { text: 'Được ạ' }, A), 201);
   h.expectOk(await h.api.post('reports', { targetType: 'message', targetId: msg.id, reason: 'spam' }, C), 201);
   const complaint = h.expectOk(await h.api.post('complaints', { orderType: 'booking', orderId: b.id, text: 'Chờ lâu' }, C), 201);
   h.expectOk(await h.api.post('contact', { subject: 'Hỏi', text: 'Có xe 5h không?' }, C), 201);
   h.expectOk(await h.api.post(`trips/${w.trip.id}/waitlist`, { seatCount: 2 }, C), 201);
+  h.expectOk(await h.api.post('admin/prohibited-items', { text: 'Vũ khí' }, A), 201);
   const promo = h.expectOk(await h.api.post('admin/promotions', { code: 'tet2027', kind: 'percent', value: 10, maxDiscount: 50000 }, A), 201);
   assert.equal(promo.code, 'TET2027');
   h.expectOk(await h.api.post(`admin/promotions/${promo.id}/grant`, { accountIds: [c.body.account.id] }, A));
@@ -35,12 +34,12 @@ test('every endpoint answers without a server error', async () => {
   h.expectOk(await h.api.post('admin/seasonal-prices', { name: 'Tết', fromDate: '2027-02-01', toDate: '2027-02-10', adjustKind: 'percent', adjustValue: 20 }, A), 201);
 
   const customerGets = [
-    'me', 'home', 'devices', 'notifications', 'notifications/unread-count', 'operator', 'banks', 'provinces', `provinces/${w.hn.id}/offices?routeId=${w.route.id}&side=pickup`,
+    'me', 'home', 'devices', 'me/devices', 'notifications', 'notifications/unread-count', 'operator', 'cancel-policy', 'provinces', `provinces/${w.hn.id}/offices?routeId=${w.route.id}&side=pickup`,
     'offices', `offices/${w.o1.id}/shuttle-zones?direction=pickup`, 'routes/available', `routes/${w.route.id}/info`, 'faq', 'content/terms', 'announcements', 'reviews',
-    `trips/${w.trip.id}`, `trips/${w.trip.id}/seats`, `trips/${w.trip.id}/alternatives`, 'bookings?tab=upcoming', `bookings/${b.id}`, `bookings/${b.id}/history`,
-    `bookings/${b.id}/share-text`, `bookings/${b.id}/messages`, `bookings/${b.id}/payment-info`, `bookings/${b.id}/cancel-preview`, `bookings/${b.id}/rebook`,
-    `proofs/${proof.id}`, 'parcels?tab=active', 'parcels/config', `parcels/${p.id}`, `parcels/${p.id}/cancel-preview`, `parcels/${p.id}/share-text`,
-    `complaints/${complaint.id}`, 'me/passengers', 'me/addresses', 'me/receivers', 'me/favorites', 'me/preferences', 'me/refund-account', 'me/emergency',
+    `trips/${w.trip.id}`, `trips/${w.trip.id}/seats`, `trips/${w.trip.id}/alternatives`, 'bookings?tab=pending', 'bookings?tab=upcoming', `bookings/${b.id}`, `bookings/${b.id}/history`,
+    `bookings/${b.id}/share-text`, `bookings/${b.id}/messages`, `bookings/${b.id}/cancel-preview`, `bookings/${b.id}/rebook`,
+    'parcels?tab=active', 'parcels/config', `parcels/${p.id}`, `parcels/${p.id}/cancel-preview`, `parcels/${p.id}/share-text`,
+    `complaints/${complaint.id}`, 'me/favorite-routes', 'me/recent-routes',
     'me/loyalty', 'me/vouchers', 'me/referral', 'me/stats', 'me/requests', 'me/refunds', 'me/waitlist', 'me/reviews', 'me/complaints', 'me/contact', 'me/data', 'me/export',
   ];
   for (const path of customerGets) {
@@ -48,35 +47,37 @@ test('every endpoint answers without a server error', async () => {
     assert.ok(res.status < 300, `customer GET ${path} -> ${res.status} ${JSON.stringify(res.body).slice(0, 300)}`);
   }
   const vouchers = h.expectOk(await h.api.get('me/vouchers', C));
-  assert.equal(vouchers.wallet[0].promotion.code, 'TET2027');
+  assert.ok(vouchers.wallet.some((v) => v.promotion.code === 'TET2027'));
+  assert.ok(vouchers.wallet.some((v) => v.promotion.code === 'CHAOBAN'));
   const nf = h.expectOk(await h.api.get('notifications', C));
   assert.ok(nf.items.some((n) => n.kind === 'announcement' && n.title === 'Nghỉ Tết'));
 
   const adminGets = [
-    'manage/dashboard?range=7d&chart=30', 'manage/inbox/counts', ...['proof', 'cancel', 'change', 'refund_request', 'lostseat', 'refund', 'parcel', 'report', 'complaint', 'message', 'contact'].map((t) => `manage/inbox?type=${t}`),
-    'manage/calendar', 'manage/proofs', 'manage/bookings', 'manage/requests', 'manage/refunds', `manage/trips?from=${w.date}&to=${w.date}`, 'manage/trips/merge-suggestions',
+    'manage/dashboard?range=7d&chart=30', 'manage/inbox/counts', 'manage/revenue?days=30', 'manage/bookings?payment=unpaid', 'manage/customers', ...['booking', 'cancel', 'collect', 'refund', 'parcel', 'report', 'complaint', 'message', 'contact'].map((t) => `manage/inbox?type=${t}`),
+    'manage/calendar', 'manage/bookings', 'manage/requests', 'manage/refunds', `manage/trips?from=${w.date}&to=${w.date}`, 'manage/trips/merge-suggestions',
     `manage/trips/${w.trip.id}`, `manage/trips/${w.trip.id}/seats`, `manage/trips/${w.trip.id}/driver-suggestions`, `manage/trips/${w.trip.id}/manifest`, `manage/trips/${w.trip.id}/shuttle`,
     `manage/trips/${w.trip.id}/logs`, `manage/trips/${w.trip.id}/driver-text`, `manage/trips/${w.trip.id}/parcels`, `manage/trips/${w.trip.id}/waitlist`, `manage/trips/${w.trip.id}/expenses`,
     'manage/series', 'manage/parcels', `manage/parcels/${p.id}/share-text`, 'manage/reviews', 'manage/messages', 'admin/reports', 'admin/complaints', 'admin/contact-messages', 'admin/actions',
     ...['reconciliation', 'profit?groupBy=route', 'profit?groupBy=vehicle', 'occupancy?groupBy=hour', 'revenue?groupBy=month', 'top', 'rates', 'parcels', 'comps', 'shuttle', 'forecast'].map((k) => `manage/reports/${k}`),
-    'manage/export?type=trips', 'manage/export?type=reconciliation', 'manage/export?type=parcels', 'admin/settings', 'admin/settings/loyalty', 'admin/bank-info/preview-qr', 'admin/admins',
+    'manage/export?type=trips', 'manage/export?type=reconciliation', 'manage/export?type=parcels', 'admin/settings', 'admin/settings/loyalty', 'admin/admins',
     'admin/customers', `admin/customers/${c.body.account.id}`, 'admin/search?q=an', 'admin/onboarding', 'admin/guests/lookup?phone=0901234567',
     'manage/seat-layouts/templates', 'manage/routes/stats', 'admin/provinces', 'manage/offices', 'manage/shuttle-zones', 'manage/seat-layouts', 'manage/vehicles', 'manage/maintenance',
     'admin/staff', 'admin/staff-schedules', 'manage/routes', 'admin/promotions', 'admin/seasonal-prices', 'admin/announcements', 'admin/faq', 'admin/checklist-items',
-    'admin/parcel-categories', 'admin/parcel-rates', 'admin/guests', `complaints/${complaint.id}`, `bookings/${b.id}`, `parcels/${p.id}`, `trips/${w.trip.id}/seats`,
+    'admin/parcel-categories', 'admin/prohibited-items', 'admin/parcel-rates', 'admin/guests', `complaints/${complaint.id}`, `bookings/${b.id}`, `parcels/${p.id}`, `trips/${w.trip.id}/seats`,
   ];
   for (const path of adminGets) {
     const res = await h.api.get(path, A);
     assert.ok(res.status < 300, `admin GET ${path} -> ${res.status} ${JSON.stringify(res.body).slice(0, 300)}`);
   }
   const counts = h.expectOk(await h.api.get('manage/inbox/counts', A));
-  assert.deepEqual([counts.proofs, counts.parcels, counts.reports, counts.complaints, counts.contacts, counts.messages], [1, 1, 1, 1, 1, 0]);
+  assert.deepEqual([counts.bookings, counts.parcels, counts.reports, counts.complaints, counts.contacts, counts.messages], [1, 1, 1, 1, 1, 0]);
   const dash = h.expectOk(await h.api.get('manage/dashboard', A));
   assert.ok(dash.alerts.some((x) => x.kind === 'maintenance_due'));
 
   // A few writes not covered elsewhere.
-  h.expectOk(await h.api.post(`proofs/${proof.id}/request-info`, { note: 'Ảnh mờ' }, A));
-  assert.equal(h.expectOk(await h.api.get(`bookings/${b.id}`, C)).status, 'info_requested');
+  h.expectOk(await h.api.post(`manage/bookings/${b.id}/approve`, {}, A));
+  h.expectOk(await h.api.post(`manage/bookings/${b.id}/collect`, { method: 'cash' }, A));
+  assert.equal(h.expectOk(await h.api.get(`bookings/${b.id}`, C)).paid, true);
   h.expectOk(await h.api.post(`manage/bookings/${b.id}/notes`, { text: 'Khách quen' }, A), 201);
   h.expectOk(await h.api.post(`manage/trips/${w.trip.id}/seats/D3/lock`, { reason: 'Ghế hỏng' }, A));
   assert.equal(h.expectOk(await h.api.get(`trips/${w.trip.id}/seats`, C)).seats.find((s) => s.seatId === 'D3').state, 'locked');

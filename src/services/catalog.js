@@ -1,12 +1,11 @@
 /**
  * Read-only data for signed-in customers: operator profile (31, 32), provinces with trips (28, 219), offices by
- * province (16, 36), shuttle zones (37), banks, FAQ and content pages (2, 107, 109), useful route info (33).
+ * province (16, 36), shuttle zones (37), FAQ and content pages (2, 107, 109), useful route info (33).
  */
 const models = require('../models');
 const { notFound } = require('../lib/errors');
 const { iso } = require('../lib/util');
 const settings = require('./settings');
-const { BANKS } = require('../lib/banks');
 
 const { Province, Office, Route, ShuttleZone, Trip, Review, FaqItem, Announcement } = models;
 
@@ -107,7 +106,6 @@ async function shuttleZones(officeId, query) {
   };
 }
 
-const banks = () => ({ items: BANKS });
 
 async function faq(lang) {
   const rows = await FaqItem.find({ language: lang, isActive: true }).sort({ category: 1, sortOrder: 1 }).lean();
@@ -142,4 +140,4 @@ async function routeInfo(id) {
   return { ...ex, rules: rules.items, actualDuration: stats, announcements: (await announcements({ limit: 20 })).filter((a) => !a.routeId || a.routeId === id) };
 }
 
-module.exports = { operator, operatorRating, provinces, availableRoutes, provinceOffices, allOffices, shuttleZones, banks, faq, content, announcements, routeInfo, presentOffice, officesByProvince };
+module.exports = { operator, operatorRating, provinces, availableRoutes, provinceOffices, allOffices, shuttleZones, faq, content, announcements, routeInfo, presentOffice, officesByProvince };

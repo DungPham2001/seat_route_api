@@ -10,20 +10,19 @@ const bookings = require('./bookings');
 const T = require('../lib/time');
 const { iso } = require('../lib/util');
 
-const { Booking, Parcel, Route, Province, Favorite, Trip, Review } = models;
+const { Booking, Parcel, Route, Province, FavoriteRoute, Trip, Review } = models;
 
 async function home(auth) {
-  await bookings.expireOverdue();
   await notify.ensureReminders(auth.accountId);
   const now = new Date();
   const me = auth.accountId;
   const [op, parcelCfg] = await Promise.all([settings.get('operator'), settings.get('parcel')]);
 
   const [upcomingRow, todoRows, recent, favorites, parcelRows, done] = await Promise.all([
-    Booking.findOne({ customerAccountId: me, status: { $in: ['confirmed', 'pending_review', 'info_requested'] }, departAt: { $gt: now } }).sort({ departAt: 1 }).lean(),
-    Booking.find({ customerAccountId: me, status: { $in: ['awaiting_payment', 'rejected', 'info_requested', 'seat_lost'] }, departAt: { $gt: now } }).sort({ createdAt: -1 }).limit(10).lean(),
+    Booking.findOne({ customerAccountId: me, status: { $in: ['pending', 'confirmed', 'cancel_requested'] }, departAt: { $gt: now } }).sort({ departAt: 1 }).lean(),
+    Booking.find({ customerAccountId: me, status: { $in: ['pending', 'rejected'] }, departAt: { $gt: now } }).sort({ createdAt: -1 }).limit(10).lean(),
     Booking.find({ customerAccountId: me }).sort({ createdAt: -1 }).limit(20).select('routeId pickupOfficeId dropOfficeId').lean(),
-    Favorite.find({ accountId: me }).lean(),
+    FavoriteRoute.find({ accountId: me }).lean(),
     Parcel.find({ senderAccountId: me, status: { $in: ['pending', 'accepted', 'received', 'loaded', 'arrived'] } }).sort({ createdAt: -1 }).limit(5).lean(),
     Booking.find({ customerAccountId: me, status: 'completed', completedAt: { $gte: T.addMinutes(now, -30 * 1440) } }).sort({ completedAt: -1 }).limit(5).lean(),
   ]);
@@ -31,25 +30,23 @@ async function home(auth) {
   const [upcoming] = upcomingRow ? await bookings.presentMany([upcomingRow]) : [null];
   const todo = [];
   for (const b of await bookings.presentMany(todoRows)) {
-    const kind = { awaiting_payment: 'upload_proof', rejected: 'resubmit_proof', info_requested: 'info_requested', seat_lost: 'seat_lost' }[b.status];
-    todo.push({ kind, bookingId: b.id, code: b.code, status: b.status, deadline: b.payDeadline, deadlineSeconds: b.payDeadlineSeconds, trip: b.trip, totalAmount: b.totalAmount, lostSeats: b.lostSeats });
+    todo.push({ kind: b.status === 'pending' ? 'waiting_approval' : 'rejected', bookingId: b.id, code: b.code, status: b.status, trip: b.trip, totalAmount: b.totalAmount, reason: b.cancelReason || null });
   }
   const parcels = await require('./parcels').presentMany(parcelRows);
   for (const p of parcels) {
-    if (p.actions.uploadProof) todo.push({ kind: 'parcel_payment', parcelId: p.id, code: p.code, fee: p.fee });
     if (p.unclaimed) todo.push({ kind: 'parcel_unclaimed', parcelId: p.id, code: p.code, office: p.toOffice.name });
   }
 
   // Shortcuts: last routes (distinct) and favourites (12).
   const routeIds = [...new Set(recent.map((b) => b.routeId))].slice(0, 5);
-  const routes = await Route.find({ _id: { $in: routeIds } }).lean();
-  const provIds = [...routes.flatMap((r) => [r.fromProvinceId, r.toProvinceId]), ...favorites.flatMap((f) => [f.fromProvinceId, f.toProvinceId]).filter(Boolean)];
+  const routes = await Route.find({ _id: { $in: [...new Set([...routeIds, ...favorites.map((f) => f.routeId)])] } }).lean();
+  const provIds = routes.flatMap((r) => [r.fromProvinceId, r.toProvinceId]);
   const pv = new Map((await Province.find({ _id: { $in: provIds } }).lean()).map((p) => [p._id, p.name]));
   const recentRoutes = routeIds.map((id) => routes.find((r) => r._id === id)).filter(Boolean).map((r) => {
     const last = recent.find((b) => b.routeId === r._id);
-    return { fromProvinceId: r.fromProvinceId, fromProvinceName: pv.get(r.fromProvinceId) || '', toProvinceId: r.toProvinceId, toProvinceName: pv.get(r.toProvinceId) || '', pickupOfficeId: last?.pickupOfficeId, dropOfficeId: last?.dropOfficeId };
+    return { routeId: r._id, name: r.name, fromProvinceId: r.fromProvinceId, fromProvinceName: pv.get(r.fromProvinceId) || '', toProvinceId: r.toProvinceId, toProvinceName: pv.get(r.toProvinceId) || '', pickupOfficeId: last?.pickupOfficeId, dropOfficeId: last?.dropOfficeId };
   });
-  const favoriteRoutes = favorites.filter((f) => f.kind === 'route').map((f) => ({ id: f._id, label: f.label, fromProvinceId: f.fromProvinceId, fromProvinceName: pv.get(f.fromProvinceId) || '', toProvinceId: f.toProvinceId, toProvinceName: pv.get(f.toProvinceId) || '' }));
+  const favoriteRoutes = favorites.map((f) => routes.find((r) => r._id === f.routeId)).filter(Boolean).map((r) => ({ routeId: r._id, name: r.name, fromProvinceId: r.fromProvinceId, fromProvinceName: pv.get(r.fromProvinceId) || '', toProvinceId: r.toProvinceId, toProvinceName: pv.get(r.toProvinceId) || '' }));
 
   // Suggestions (18): upcoming open trips on the routes the customer takes most, with many free seats.
   const counts = new Map();
@@ -68,7 +65,7 @@ async function home(auth) {
     todo,
     shortcuts: { recentRoutes, favoriteRoutes, rebookBookingId: recent[0]?._id || null },
     services: [{ key: 'parcel', enabled: !!parcelCfg.enabled }],
-    activeParcels: parcels.map((p) => ({ id: p.id, code: p.code, status: p.status, payStatus: p.payStatus, receiverName: p.receiver.name, toOffice: p.toOffice.name, trip: p.trip })),
+    activeParcels: parcels.map((p) => ({ id: p.id, code: p.code, status: p.status, receiverName: p.receiver.name, toOffice: p.toOffice.name, trip: p.trip })),
     promotions: await require('./loyalty').activePromotions(),
     announcements: await require('./catalog').announcements({ limit: 5 }),
     toReview,

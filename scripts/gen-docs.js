@@ -12,11 +12,11 @@ const FILE = path.join(__dirname, '..', 'docs', 'API-cho-FE.md');
 
 const TITLES = {
   provinces: 'Tỉnh / thành phố (219)', offices: 'Văn phòng (207)', shuttleZones: 'Khu vực xe trung chuyển (213)', seatLayouts: 'Sơ đồ ghế (186)',
-  vehicles: 'Xe (185-192)', maintenance: 'Bảo dưỡng xe (191)', staff: 'Nhân viên & tài xế (194-196, 202)', staffSchedules: 'Lịch làm / ngày nghỉ / ca (197, 198)',
+  vehicles: 'Xe — limo và xe trung chuyển (185-192)', maintenance: 'Bảo dưỡng xe (191)', staff: 'Nhân viên & tài xế (194-196, 202)', staffSchedules: 'Lịch làm / ngày nghỉ / ca (197, 198)',
   routes: 'Tuyến (210-217)', promotions: 'Mã giảm giá (227)', seasonalPrices: 'Giá theo mùa / dịp lễ (228)', announcements: 'Thông báo chung / tin nhà xe (238)',
   faq: 'Câu hỏi thường gặp (237)', checklistItems: 'Mẫu việc trước giờ chạy (184)', parcelCategories: 'Loại hàng / hàng cấm (221)', parcelRates: 'Bảng cước gửi đồ (220)',
-  guests: 'Khách không dùng app (135)', tripExpenses: 'Chi phí chuyến (241)', passengers: 'Hành khách đi cùng đã lưu (83)', addresses: 'Địa chỉ trung chuyển đã lưu (84)',
-  receivers: 'Sổ người nhận hàng (86)', favorites: 'Tuyến / văn phòng yêu thích (87)',
+  prohibitedItems: 'Hàng cấm gửi (221)',
+  guests: 'Khách tại quầy / không dùng app (135)', tripExpenses: 'Chi phí chuyến (241)',
 };
 
 function typeText(f) {

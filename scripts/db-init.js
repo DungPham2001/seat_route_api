@@ -4,8 +4,8 @@
  *   npm run db:init
  *   MONGODB_URI="mongodb+srv://..." DEFAULT_ADMIN_EMAIL=admin@yourdomain.vn npm run db:init
  *
- * The default admin gets a random password printed ONCE here (never in the app, the repo or the docs) and
- * must change it at the first sign-in (feature 114).
+ * The default admin gets a random password printed ONCE here (never in the app, the repo or the docs).
+ * Change it in the app (Profile > change password); nothing forces it.
  */
 const mongoose = require('mongoose');
 const config = require('../src/config');
@@ -35,9 +35,9 @@ async function main() {
     const now = new Date();
     await models.Account.create({
       _id: uuid(), email, passwordHash: await password.hash(plain), displayName: 'Quản trị viên', role: 'admin', preferredLanguage: 'vi', status: 'active',
-      mustChangePassword: true, search: noAccent(`quan tri vien ${email}`), passwordChangedAt: now, createdAt: now, updatedAt: now,
+      search: noAccent(`quan tri vien ${email}`), passwordChangedAt: now, createdAt: now, updatedAt: now,
     });
-    console.log('\nDefault admin created (shown only once, change it at first sign-in):');
+    console.log('\nDefault admin created (shown only once, change it in the app):');
     console.log(`  email:    ${email}`);
     console.log(`  password: ${plain}\n`);
   }

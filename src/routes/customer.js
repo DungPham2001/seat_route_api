@@ -2,11 +2,7 @@
 const express = require('express');
 const { asyncHandler } = require('../lib/errors');
 const { requireCustomer } = require('../middleware/auth');
-const { uploadOne } = require('../middleware/upload');
-const { resources } = require('../resources/defs');
-const accounts = require('../services/accounts');
 const bookings = require('../services/bookings');
-const proofs = require('../services/proofs');
 const parcels = require('../services/parcels');
 const social = require('../services/social');
 const loyalty = require('../services/loyalty');
@@ -28,12 +24,8 @@ r.post('/bookings', C, h(async (req, res) => {
   const out = await bookings.create(req.auth, req.body, { idempotencyKey: req.get('idempotency-key') });
   res.status(out.status).json(out.body);
 }));
-r.get('/bookings/:id/payment-info', C, h(async (req, res) => res.json(await bookings.paymentInfo(req.auth, req.params.id))));
-r.post('/bookings/:id/proofs', C, uploadOne, h(async (req, res) => res.status(201).json(await proofs.upload(req.auth, 'booking', req.params.id, req))));
-r.post('/bookings/:id/reselect-seats', C, h(async (req, res) => res.json(await bookings.reselectSeats(req.auth, req.params.id, req.body))));
 r.get('/bookings/:id/cancel-preview', C, h(async (req, res) => res.json(await bookings.cancelPreview(req.auth, req.params.id))));
 r.post('/bookings/:id/cancel', C, h(async (req, res) => res.json(await bookings.requestCancel(req.auth, req.params.id, req.body))));
-r.post('/bookings/:id/requests', C, h(async (req, res) => res.status(201).json(await bookings.createRequest(req.auth, req.params.id, req.body))));
 r.get('/bookings/:id/rebook', C, h(async (req, res) => res.json(await bookings.rebook(req.auth, req.params.id))));
 r.post('/trips/:id/waitlist', C, h(async (req, res) => res.status(201).json(await social.joinWaitlist(req.auth, req.params.id, req.body))));
 
@@ -42,8 +34,6 @@ r.post('/parcels', C, h(async (req, res) => {
   const out = await parcels.create(req.auth, req.body, { idempotencyKey: req.get('idempotency-key') });
   res.status(out.status).json(out.body);
 }));
-r.get('/parcels/:id/payment-info', C, h(async (req, res) => res.json(await parcels.paymentInfo(req.auth, req.params.id))));
-r.post('/parcels/:id/proofs', C, uploadOne, h(async (req, res) => res.status(201).json(await proofs.upload(req.auth, 'parcel', req.params.id, req))));
 r.get('/parcels/:id/cancel-preview', C, h(async (req, res) => res.json(await parcels.getCancelPreview(req.auth, req.params.id))));
 r.post('/parcels/:id/cancel', C, h(async (req, res) => res.json(await parcels.cancel(req.auth, req.params.id, req.body))));
 r.post('/parcels/:id/handover-code', C, h(async (req, res) => res.json(await parcels.regenerateCode(req.auth, req.params.id))));
@@ -58,15 +48,11 @@ r.post('/complaints', C, h(async (req, res) => res.status(201).json(await social
 r.post('/contact', C, h(async (req, res) => res.status(201).json(await social.createContact(req.auth, req.body))));
 
 // ---------- Profile ----------
-for (const key of ['passengers', 'addresses', 'receivers', 'favorites']) {
-  const res = resources[key];
-  r.use(res.path, C, res.router());
-}
-for (const [path, key] of [['/me/preferences', 'preferences'], ['/me/refund-account', 'refundAccount'], ['/me/emergency', 'emergencyContact']]) {
-  r.get(path, C, (req, res) => res.json(accounts.getSingle(req.auth, key)));
-  r.put(path, C, h(async (req, res) => res.json(await accounts.putSingle(req.auth, key, req.body))));
-  if (key !== 'preferences') r.delete(path, C, noContent(async (req) => accounts.deleteSingle(req.auth, key)));
-}
+// Favourite routes and the routes taken recently ("Đặt nhanh"). Nothing else is stored for the customer.
+r.get('/me/favorite-routes', C, h(async (req, res) => res.json(await social.favoriteRoutes(req.auth))));
+r.post('/me/favorite-routes/:routeId', C, h(async (req, res) => res.status(201).json(await social.addFavoriteRoute(req.auth, req.params.routeId))));
+r.delete('/me/favorite-routes/:routeId', C, noContent(async (req) => social.removeFavoriteRoute(req.auth, req.params.routeId)));
+r.get('/me/recent-routes', C, h(async (req, res) => res.json(await social.recentRoutes(req.auth))));
 r.get('/me/loyalty', C, h(async (req, res) => res.json(await loyalty.detail(req.auth, req.query))));
 r.get('/me/vouchers', C, h(async (req, res) => res.json(await loyalty.vouchers(req.auth))));
 r.post('/me/vouchers', C, h(async (req, res) => res.status(201).json(await loyalty.saveVoucher(req.auth, req.body))));

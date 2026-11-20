@@ -66,13 +66,13 @@ class Checker {
     return this.str(obj, key, { max: 20, pattern: PHONE, ...opts });
   }
 
-  /** Server decides password strength: 8..72 bytes (bcrypt limit), at least one letter and one digit. */
+  /** Server decides password strength: 8..72 bytes (bcrypt limit), with an upper-case letter, a lower-case letter and a digit. */
   password(obj, key, { field = key } = {}) {
     const v = isObj(obj) ? obj[key] : undefined;
     if (v === undefined || v === null || v === '') return this.fail(field, 'required');
     if (typeof v !== 'string') return this.fail(field, 'invalid_type');
     if (Buffer.byteLength(v, 'utf8') > 72) return this.fail(field, 'too_long');
-    if (v.length < 8 || !/\p{L}/u.test(v) || !/\d/.test(v)) return this.fail(field, 'weak_password');
+    if (v.length < 8 || !/\p{Lu}/u.test(v) || !/\p{Ll}/u.test(v) || !/\d/.test(v)) return this.fail(field, 'weak_password');
     return v;
   }
 

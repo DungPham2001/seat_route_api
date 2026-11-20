@@ -1,7 +1,8 @@
 /**
  * Admin overview (118-129), "to confirm" inbox (122, 140-156) and confirmation calendar (141).
- * Revenue = payments recorded in the app (approved receipts, cash, direct transfer; free seats excluded)
- * minus refunds recorded, by recording time, in the operator's timezone. The inbox counts and the dashboard card
+ * Revenue = money collected at the counter and recorded in the app (cash, direct transfer; free seats excluded)
+ * minus refunds recorded, by the day it was recorded, in the operator's timezone. An approved booking that was not
+ * collected yet is not revenue (it shows as "waiting for payment"). The inbox counts and the dashboard card
  * come from the same function so the two never disagree.
  */
 const models = require('../models');
@@ -9,7 +10,7 @@ const T = require('../lib/time');
 const { iso } = require('../lib/util');
 const settings = require('./settings');
 
-const { PaymentRecord, Refund, Booking, Parcel, Trip, Vehicle, StaffMember, StaffSchedule, PaymentProof, OrderRequest, Report, Complaint, Message, ContactMessage, Route } = models;
+const { PaymentRecord, Refund, Booking, Parcel, Trip, Vehicle, StaffMember, StaffSchedule, OrderRequest, Report, Complaint, Message, ContactMessage, Route } = models;
 
 async function revenueBetween(start, end, extra = {}) {
   const [inc, out] = await Promise.all([
@@ -66,28 +67,34 @@ async function chart(days) {
 }
 const config = () => require('../config');
 
+/** Bookings approved but not paid at the counter yet: count and total (the "Chờ thu tiền" card). */
+async function unpaidSummary() {
+  const now = new Date();
+  const rows = await Booking.aggregate([
+    { $match: { status: 'confirmed', paidAt: null, source: 'app', totalAmount: { $gt: 0 } } },
+    { $group: { _id: null, count: { $sum: 1 }, amount: { $sum: '$totalAmount' }, soon: { $sum: { $cond: [{ $lte: ['$departAt', T.addMinutes(now, 1440)] }, 1, 0] } }, soonAmount: { $sum: { $cond: [{ $lte: ['$departAt', T.addMinutes(now, 1440)] }, '$totalAmount', 0] } } } },
+  ]);
+  return { count: rows[0]?.count || 0, amount: rows[0]?.amount || 0, tripsWithin24h: rows[0]?.soon || 0, amountWithin24h: rows[0]?.soonAmount || 0 };
+}
+
 /** Counts of everything waiting for the admin (122, 140). Same numbers as the inbox lists. */
 async function inboxCounts() {
-  const [proofs, proofsBooking, cancel, change, refundReq, lostSeat, refunds, parcels, reports, complaints, messages, contacts] = await Promise.all([
-    PaymentProof.countDocuments({ status: 'pending' }),
-    PaymentProof.countDocuments({ status: 'pending', orderType: 'booking' }),
+  const [bookings, cancel, refunds, parcels, reports, complaints, messages, contacts, unpaid, oldest] = await Promise.all([
+    Booking.countDocuments({ status: 'pending' }),
     OrderRequest.countDocuments({ status: 'pending', type: 'cancel' }),
-    OrderRequest.countDocuments({ status: 'pending', type: { $in: ['change_seat', 'change_trip'] } }),
-    OrderRequest.countDocuments({ status: 'pending', type: 'refund' }),
-    Booking.countDocuments({ status: 'seat_lost' }),
     Refund.countDocuments({ status: 'pending' }),
     Parcel.countDocuments({ status: 'pending' }),
     Report.countDocuments({ status: 'open' }),
     Complaint.countDocuments({ status: { $in: ['open', 'in_progress'] } }),
     Message.distinct('bookingId', { senderRole: 'customer', readAt: null }).then((x) => x.length),
     ContactMessage.countDocuments({ status: 'open' }),
+    unpaidSummary(),
+    Booking.findOne({ status: 'pending' }).sort({ createdAt: 1 }).lean(),
   ]);
-  const oldest = await PaymentProof.findOne({ status: 'pending' }).sort({ uploadedAt: 1 }).lean();
   return {
-    proofs, proofsBooking, proofsParcel: proofs - proofsBooking, cancelRequests: cancel, changeRequests: change, refundRequests: refundReq, lostSeat,
-    refunds, parcels, reports, complaints, messages, contacts,
-    total: proofs + cancel + change + refundReq + lostSeat + refunds + parcels + reports + complaints + messages + contacts,
-    oldestProofWaitingMinutes: oldest ? Math.round((Date.now() - oldest.uploadedAt) / 60000) : null,
+    bookings, cancelRequests: cancel, toCollect: unpaid.count, toCollectAmount: unpaid.amount, refunds, parcels, reports, complaints, messages, contacts,
+    total: bookings + cancel + unpaid.count + refunds + parcels + reports + complaints + messages + contacts,
+    oldestBookingWaitingMinutes: oldest ? Math.round((Date.now() - oldest.createdAt) / 60000) : null,
   };
 }
 
@@ -101,6 +108,7 @@ async function alerts() {
     StaffMember.find({ kind: 'limo_driver', status: 'active', licenseExpiresOn: { $ne: null, $lte: month } }).lean(),
     Trip.find({ status: 'scheduled', departAt: { $gt: new Date(), $lte: T.addMinutes(new Date(), 1440) } }).lean(),
   ]);
+  const unpaid = await unpaidSummary();
   const out = [];
   for (const v of vehicles) for (const d of v.docDates || []) if (d.expiresOn <= week) out.push({ kind: 'vehicle_doc', severity: d.expiresOn < today ? 'high' : 'medium', vehicleId: v._id, plateNo: v.plateNo, docKind: d.kind, expiresOn: d.expiresOn });
   const vm = new Map((await Vehicle.find({ _id: { $in: maint.map((m) => m.vehicleId) } }).select('plateNo').lean()).map((v) => [v._id, v.plateNo]));
@@ -109,6 +117,7 @@ async function alerts() {
   for (const m of maint) if (!latest.has(m.vehicleId) || latest.get(m.vehicleId).date < m.date) latest.set(m.vehicleId, m);
   for (const m of latest.values()) out.push({ kind: 'maintenance_due', severity: m.nextDueOn < today ? 'high' : 'medium', vehicleId: m.vehicleId, plateNo: vm.get(m.vehicleId) || '', dueOn: m.nextDueOn });
   for (const d of drivers) out.push({ kind: 'license_expiring', severity: d.licenseExpiresOn < today ? 'high' : 'medium', staffId: d._id, name: d.name, expiresOn: d.licenseExpiresOn });
+  if (unpaid.tripsWithin24h) out.push({ kind: 'unpaid_soon', severity: 'high', count: unpaid.tripsWithin24h, amount: unpaid.amountWithin24h });
   const sys = await settings.get('system');
   const items = await require('./trips').presentMany(soonTrips, { admin: true });
   for (const t of items) {
@@ -131,12 +140,12 @@ async function dashboard(query) {
   const todayTrips = await Trip.find({ departAt: { $gte: ts, $lt: te }, status: { $ne: 'cancelled' } }).lean();
   const tripItems = await require('./trips').presentMany(todayTrips, { admin: true });
   const seatsTotal = tripItems.reduce((s, t) => s + t.seats.total, 0);
-  const seatsUsed = tripItems.reduce((s, t) => s + t.seats.sold + t.seats.claimed, 0);
+  const seatsUsed = tripItems.reduce((s, t) => s + t.seats.sold + t.seats.pending, 0);
   const [parcelsToday, parcelsPending, parcelsWaiting, parcelRevenue] = await Promise.all([
     Parcel.countDocuments({ createdAt: { $gte: ts, $lt: te } }), Parcel.countDocuments({ status: 'pending' }), Parcel.countDocuments({ status: 'arrived' }), revenueBetween(r.start, r.end, { orderType: 'parcel' }),
   ]);
   const recent = await Booking.find({}).sort({ createdAt: -1 }).limit(5).lean();
-  const waiting = await PaymentProof.find({ status: 'pending' }).sort({ uploadedAt: 1 }).limit(5).lean();
+  const waiting = await Booking.find({ status: 'pending' }).sort({ createdAt: 1 }).limit(5).lean();
   const top = await topRoutesAndHours(r.start, r.end);
   return {
     range: { preset: r.preset, from: r.from, to: r.to },
@@ -159,7 +168,8 @@ async function dashboard(query) {
       items: tripItems.map((t) => ({ id: t.id, route: t.route?.name, departTime: t.departTime, status: t.status, tripStatus: t.tripStatus, seats: t.seats, fillPercent: t.fillPercent, needsVehicle: t.needsVehicle, needsDriver: t.needsDriver })),
     },
     recentBookings: (await require('./bookings').presentMany(recent, { admin: true })).map((b) => ({ id: b.id, code: b.code, status: b.status, source: b.source, totalAmount: b.totalAmount, trip: b.trip, createdAt: b.createdAt })),
-    longestWaiting: waiting.map((p) => ({ proofId: p._id, orderType: p.orderType, orderId: p.orderId, orderCode: p.orderCode, amount: p.amount, uploadedAt: iso(p.uploadedAt), waitingMinutes: Math.round((Date.now() - p.uploadedAt) / 60000) })),
+    toCollect: await unpaidSummary(),
+    longestWaiting: waiting.map((b) => ({ bookingId: b._id, code: b.code, amount: b.totalAmount, createdAt: iso(b.createdAt), waitingMinutes: Math.round((Date.now() - b.createdAt) / 60000) })),
     topRoutes: top.routes,
     topHours: top.hours,
     alerts: await alerts(),
@@ -185,7 +195,7 @@ async function topRoutesAndHours(start, end) {
   };
 }
 
-/** GET /manage/calendar?from&to — per day: trips, receipts waiting, requests, parcels to confirm (141). */
+/** GET /manage/calendar?from&to — per day: trips, bookings to approve, cancel requests, payments to collect, parcels (141). */
 async function calendar(query) {
   const from = T.isDate(query.from) ? query.from : T.weekStart(T.today());
   const to = T.isDate(query.to) ? query.to : T.addDays(from, 6);
@@ -193,18 +203,18 @@ async function calendar(query) {
   const end = T.localToUtc(T.addDays(to, 1));
   const tz = config().timezone;
   const day = (field) => ({ $dateToString: { format: '%Y-%m-%d', date: field, timezone: tz } });
-  const [trips, proofs, requests, lost, parcels] = await Promise.all([
+  const [trips, pendingBookings, requests, toCollect, parcels] = await Promise.all([
     Trip.aggregate([{ $match: { departAt: { $gte: start, $lt: end }, status: { $ne: 'cancelled' } } }, { $group: { _id: '$date', n: { $sum: 1 } } }]),
-    PaymentProof.aggregate([{ $match: { status: 'pending', departAt: { $gte: start, $lt: end } } }, { $group: { _id: day('$departAt'), n: { $sum: 1 } } }]),
+    Booking.aggregate([{ $match: { status: 'pending', departAt: { $gte: start, $lt: end } } }, { $group: { _id: day('$departAt'), n: { $sum: 1 } } }]),
     OrderRequest.aggregate([{ $match: { status: 'pending', departAt: { $gte: start, $lt: end } } }, { $group: { _id: day('$departAt'), n: { $sum: 1 } } }]),
-    Booking.aggregate([{ $match: { status: 'seat_lost', departAt: { $gte: start, $lt: end } } }, { $group: { _id: day('$departAt'), n: { $sum: 1 } } }]),
+    Booking.aggregate([{ $match: { status: 'confirmed', paidAt: null, source: 'app', departAt: { $gte: start, $lt: end } } }, { $group: { _id: day('$departAt'), n: { $sum: 1 } } }]),
     Parcel.aggregate([{ $match: { status: 'pending', date: { $gte: from, $lte: to } } }, { $group: { _id: '$date', n: { $sum: 1 } } }]),
   ]);
   const get = (arr, d) => arr.find((x) => x._id === d)?.n || 0;
   const days = [];
   for (let d = from; d <= to; d = T.addDays(d, 1)) {
-    const item = { date: d, trips: get(trips, d), proofs: get(proofs, d), requests: get(requests, d), lostSeat: get(lost, d), parcels: get(parcels, d) };
-    item.toConfirm = item.proofs + item.requests + item.lostSeat + item.parcels;
+    const item = { date: d, trips: get(trips, d), bookings: get(pendingBookings, d), requests: get(requests, d), toCollect: get(toCollect, d), parcels: get(parcels, d) };
+    item.toConfirm = item.bookings + item.requests + item.toCollect + item.parcels;
     days.push(item);
   }
   return { from, to, days };
@@ -212,14 +222,12 @@ async function calendar(query) {
 
 /** GET /manage/inbox?type=... — one entry point for the "Cần xác nhận" tab. */
 async function inbox(auth, query) {
-  const type = query.type || 'proof';
+  const type = query.type || 'booking';
   const bookings = require('./bookings');
   switch (type) {
-    case 'proof': return require('./proofs').queue(query);
+    case 'booking': return bookings.list(auth, { ...query, status: 'pending' }); // oldest first, overdue flagged
     case 'cancel': return bookings.listRequests(auth, { ...query, status: 'pending', type: 'cancel' });
-    case 'change': return bookings.listRequests(auth, { ...query, status: 'pending', type: 'change_seat,change_trip' });
-    case 'refund_request': return bookings.listRequests(auth, { ...query, status: 'pending', type: 'refund' });
-    case 'lostseat': return bookings.list(auth, { ...query, status: 'seat_lost' });
+    case 'collect': return bookings.list(auth, { ...query, payment: 'unpaid' }); // earliest trip first
     case 'refund': return bookings.listRefunds(auth, { ...query, status: 'pending' });
     case 'parcel': return require('./parcels').list(auth, { ...query, status: 'pending' });
     case 'report': return require('./social').adminReports(query);
@@ -230,5 +238,5 @@ async function inbox(auth, query) {
   }
 }
 
-module.exports = { dashboard, inboxCounts, calendar, inbox, revenueBetween, rangeOf, chart, topRoutesAndHours, alerts };
+module.exports = { dashboard, inboxCounts, unpaidSummary, calendar, inbox, revenueBetween, rangeOf, chart, topRoutesAndHours, alerts };
 

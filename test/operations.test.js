@@ -7,9 +7,7 @@ before(h.start);
 after(h.stop);
 beforeEach(h.reset);
 
-const upload = (path, token, seed) => h.request(h.app).post(`/v1/${path}`).set('Authorization', `Bearer ${token}`).attach('file', h.jpeg(seed), 'r.jpg');
-
-test('parcel: quote, accept with capacity, pay by receipt, milestones, handover code', async () => {
+test('parcel: quote, accept with capacity, fee collected when received at the counter, milestones, handover code', async () => {
   const { token: admin } = await h.adminToken();
   const w = await h.world(admin);
   h.expectOk(await h.api.post('admin/parcel-rates', { routeId: w.route.id, sizeClass: 'small', maxWeightKg: 5, price: 40000, extraPerKg: 5000, declaredValuePercent: 1 }, admin), 201);
@@ -33,14 +31,13 @@ test('parcel: quote, accept with capacity, pay by receipt, milestones, handover 
   const acc = h.expectOk(await h.api.post(`manage/parcels/${p.id}/accept`, { tripId: w.trip.id }, admin));
   assert.equal(acc.status, 'accepted');
   assert.equal(acc.fee, 55000);
-  const pi = h.expectOk(await h.api.get(`parcels/${p.id}/payment-info`, c.token));
-  assert.equal(pi.amount, 55000);
-  const up = await upload(`parcels/${p.id}/proofs`, c.token, 21);
-  assert.equal(up.status, 201, JSON.stringify(up.body));
-  assert.equal(up.body.parcel.payStatus, 'pending_review');
-  const proof = (await h.api.get('manage/proofs?orderType=parcel', admin)).body.items[0];
-  h.expectOk(await h.api.post(`proofs/${proof.id}/approve`, {}, admin));
-  for (const s of ['received', 'loaded', 'arrived']) h.expectOk(await h.api.post(`manage/parcels/${p.id}/status`, { status: s }, admin));
+  assert.equal(acc.paid, false);
+  assert.equal(h.expectOk(await h.api.get('manage/dashboard', admin)).revenue.today.parcel, 0);
+  // The sender pays at the counter: marking the goods received records the fee (revenue from that moment).
+  const rcv = h.expectOk(await h.api.post(`manage/parcels/${p.id}/status`, { status: 'received', payMethod: 'cash' }, admin));
+  assert.equal(rcv.paid, true);
+  assert.equal(rcv.payMethod, 'cash');
+  for (const s of ['loaded', 'arrived']) h.expectOk(await h.api.post(`manage/parcels/${p.id}/status`, { status: s }, admin));
   const wrong = await h.api.post(`manage/parcels/${p.id}/handover`, { code: '000000' === p.handoverCode ? '111111' : '000000' }, admin);
   assert.equal(wrong.body.code, 'handover_invalid');
   assert.equal(wrong.body.attemptsLeft, 4);
@@ -53,7 +50,7 @@ test('parcel: quote, accept with capacity, pay by receipt, milestones, handover 
   assert.equal(dash.revenue.today.parcel, 55000);
 });
 
-test('recurring series, overlap check with force, trip change request with price difference', async () => {
+test('recurring series, overlap check with force, admin moves a booking, cancelling a trip refunds', async () => {
   const { token: admin } = await h.adminToken();
   const w = await h.world(admin);
   const series = h.expectOk(await h.api.post('manage/series', { routeId: w.route.id, vehicleId: w.vehicle.id, weekdays: [0, 1, 2, 3, 4, 5, 6], departTime: '14:00', startDate: T.today(), endDate: T.addDays(T.today(), 6), basePrice: 270000 }, admin), 201);
@@ -69,14 +66,11 @@ test('recurring series, overlap check with force, trip change request with price
   assert.equal(ex.exceptions.length, 1);
 
   const c = await h.customer();
-  const b = h.expectOk(await h.api.post('bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, seats: [{ seatId: 'D1', passengerName: 'An', passengerPhone: '0901234567' }] }, c.token), 201);
-  await upload(`bookings/${b.id}/proofs`, c.token, 31);
-  const proof = (await h.api.get('manage/proofs', admin)).body.items[0];
-  h.expectOk(await h.api.post(`proofs/${proof.id}/approve`, {}, admin));
+  const b = h.expectOk(await h.api.post('bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, seats: ['D1'] }, c.token), 201);
+  h.expectOk(await h.api.post(`manage/bookings/${b.id}/approve`, {}, admin));
+  h.expectOk(await h.api.post(`manage/bookings/${b.id}/collect`, { method: 'cash' }, admin));
   const target = h.expectOk(await h.api.get(`trips?fromProvinceId=${w.hn.id}&toProvinceId=${w.tb.id}&date=${w.date}`, c.token)).items.find((t) => t.departTime === '14:00');
-  const req = h.expectOk(await h.api.post(`bookings/${b.id}/requests`, { type: 'change_trip', tripId: target.id, note: 'Đi chiều' }, c.token), 201);
-  assert.equal(req.request.priceDiff, 20000);
-  h.expectOk(await h.api.post(`manage/requests/${req.request.id}/approve`, { note: 'OK' }, admin));
+  h.expectOk(await h.api.post(`manage/bookings/${b.id}/move`, { tripId: target.id, reason: 'Đi chiều' }, admin));
   const moved = h.expectOk(await h.api.get(`bookings/${b.id}`, c.token));
   assert.equal(moved.trip.id, target.id);
   assert.equal(moved.trip.departTime, '14:00');
@@ -91,7 +85,7 @@ test('recurring series, overlap check with force, trip change request with price
   const res = h.expectOk(await h.api.post(`manage/trips/${target.id}/cancel`, { reason: 'Xe hỏng' }, admin));
   assert.equal(res.cancelledBookings, 1);
   const refunds = h.expectOk(await h.api.get('me/refunds', c.token));
-  assert.equal(refunds.items[0].amount, 250000);
+  assert.equal(refunds.items[0].amount, 250000); // trip cancelled: full refund of what was paid
   const n = h.expectOk(await h.api.get('notifications?category=trip', c.token));
   assert.ok(n.items.some((x) => x.kind === 'trip_cancelled'));
 });
@@ -100,22 +94,18 @@ test('privacy: blocked while a trip is active; deletion erases personal data', a
   const { token: admin } = await h.adminToken();
   const w = await h.world(admin);
   const c = await h.customer();
-  h.expectOk(await h.api.post('me/passengers', { name: 'Mẹ', phone: '0909000999' }, c.token), 201);
-  h.expectOk(await h.api.put('me/refund-account', { holderName: 'Nguyen Van An', accountNo: '123456789', bankName: 'Ngân hàng X' }, c.token));
-  const b = h.expectOk(await h.api.post('bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, seats: [{ seatId: 'A1', passengerName: 'An', passengerPhone: '0901234567' }] }, c.token), 201);
-  await upload(`bookings/${b.id}/proofs`, c.token, 41);
+  h.expectOk(await h.api.post(`me/favorite-routes/${w.route.id}`, {}, c.token), 201);
+  const b = h.expectOk(await h.api.post('bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, seats: ['A1'] }, c.token), 201);
   const data = h.expectOk(await h.api.get('me/data', c.token));
-  assert.equal(data.counts.receiptPhotos, 1);
+  assert.equal(data.counts.bookings, 1);
   const blocked = await h.api.del('me', { password: h.PASSWORD }, c.token);
   assert.equal(blocked.body.code, 'has_active_orders');
-  const proof = (await h.api.get('manage/proofs', admin)).body.items[0];
-  h.expectOk(await h.api.post(`proofs/${proof.id}/reject`, { reason: 'Sai số tiền' }, admin));
+  h.expectOk(await h.api.post(`manage/bookings/${b.id}/reject`, { reason: 'Hết xe' }, admin));
   assert.equal((await h.api.del('me', { password: h.PASSWORD }, c.token)).status, 204);
   const left = await h.models.Booking.findById(b.id).lean();
   assert.equal(left.customerAccountId, null);
   assert.equal(left.seats[0].passengerName, '');
-  assert.equal(await h.models.FileObject.countDocuments(), 0);
-  assert.equal(await h.models.SavedPassenger.countDocuments(), 0);
+  assert.equal(await h.models.FavoriteRoute.countDocuments(), 0);
   assert.equal((await h.api.post('auth/login', { email: 'khach@example.com', password: h.PASSWORD })).status, 401);
 });
 
@@ -138,15 +128,49 @@ test('catalog CRUD rules, CSV import preview, search, settings validation', asyn
   assert.equal(commit.body.created, 1);
   const s = h.expectOk(await h.api.get('admin/search?q=thai binh', admin));
   assert.ok(s.trips.length >= 1);
-  assert.equal((await h.api.put('admin/settings/system', { payDeadlineMinutes: 1 }, admin)).body.fields[0].code, 'out_of_range');
-  h.expectOk(await h.api.put('admin/settings/system', { payDeadlineMinutes: 30 }, admin));
-  const qr = h.expectOk(await h.api.get('admin/bank-info/preview-qr?amount=10000', admin));
-  assert.ok(qr.qrPayload.endsWith(require('../src/lib/vietqr').crc16(qr.qrPayload.slice(0, -4))));
-  assert.equal(require('../src/lib/vietqr').crc16('123456789'), '29B1');
+  assert.equal((await h.api.put('admin/settings/system', { bookingLeadHours: 500 }, admin)).body.fields[0].code, 'out_of_range');
+  assert.equal(h.expectOk(await h.api.put('admin/settings/system', { bookingLeadHours: 3 }, admin)).bookingLeadHours, 3);
+  assert.equal(h.expectOk(await h.api.get('cancel-policy', admin)).cancelFee, 10000);
+  assert.equal(h.expectOk(await h.api.get('cancel-policy', admin)).tiers[0].refundPercent, 100);
   const ob = h.expectOk(await h.api.get('admin/onboarding', admin));
   assert.equal(ob.steps.find((x) => x.key === 'first_trip').done, true);
   const inbox = h.expectOk(await h.api.get('manage/inbox/counts', admin));
   assert.equal(inbox.total, 0);
   const cal = h.expectOk(await h.api.get('manage/calendar', admin));
   assert.equal(cal.days.length, 7);
+});
+
+test('trip repeats on weekdays for 4 weeks (skipping clashes); vehicles: shuttle has no layout and cannot run a trip; layout rules', async () => {
+  const { token: admin } = await h.adminToken();
+  const w = await h.world(admin);
+  const wd = T.weekday(T.addDays(T.today(), 5));
+  const rep = h.expectOk(await h.api.post('manage/trips', { routeId: w.route.id, date: T.addDays(T.today(), 5), departTime: '10:00', vehicleId: w.vehicle.id, basePrice: 250000, repeatWeekdays: [wd] }, admin), 201);
+  assert.equal(rep.repeatedTrips, 4);
+  const list = h.expectOk(await h.api.get(`manage/trips?from=${T.addDays(T.today(), 5)}&to=${T.addDays(T.today(), 40)}`, admin));
+  assert.equal(list.items.filter((t) => t.departTime === '10:00').length, 5);
+
+  const shuttle = h.expectOk(await h.api.post('manage/vehicles', { type: 'shuttle', plateNo: '29b-999.99', capacity: 16 }, admin), 201);
+  assert.equal(shuttle.seatCount, 16);
+  assert.equal(shuttle.plateNo, '29B-999.99');
+  assert.equal(shuttle.layoutId, null);
+  const bad = await h.api.post('manage/trips', { routeId: w.route.id, date: T.addDays(T.today(), 3), departTime: '09:00', vehicleId: shuttle.id }, admin);
+  assert.equal(bad.status, 400);
+  assert.equal((await h.api.post('manage/vehicles', { type: 'limo', plateNo: '29B-111.11' }, admin)).body.fields[0].field, 'layoutId');
+  assert.equal(w.vehicle.frontSurcharge, 30000);
+  assert.equal(w.vehicle.seatCount, 10); // 9 seats for sale + the driver's place
+
+  const cells = [{ id: 'A1', label: 'A1', row: 0, col: 0, seatClass: 'standard', isSellable: true }, { id: 'A2', label: 'A2', row: 0, col: 1 }];
+  const driverCell = await h.api.post('manage/seat-layouts', { name: 'Sai', rows: 3, cols: 3, seats: cells }, admin);
+  assert.ok(driverCell.body.fields.some((f) => f.code === 'driver_cell'));
+  const tooSmall = await h.api.post('manage/seat-layouts', { name: 'Nhỏ', rows: 3, cols: 3, seats: [{ id: 'A1', label: 'A1', row: 0, col: 1 }] }, admin);
+  assert.ok(tooSmall.body.fields.some((f) => f.code === 'too_few_seats'));
+  assert.equal((await h.api.post('manage/seat-layouts', { name: 'Lớn', rows: 9, cols: 3, seats: [] }, admin)).status, 400);
+
+  // a vehicle can take over a trip only with the same layout
+  const tpl = h.expectOk(await h.api.get('manage/seat-layouts/templates', admin)).items.find((t) => t.key === '11');
+  const l11 = h.expectOk(await h.api.post('manage/seat-layouts', { name: tpl.name, rows: tpl.rows, cols: tpl.cols, seats: tpl.seats }, admin), 201);
+  const v11 = h.expectOk(await h.api.post('manage/vehicles', { type: 'limo', plateNo: '29B-222.22', layoutId: l11.id }, admin), 201);
+  assert.equal((await h.api.put(`manage/trips/${w.trip.id}/vehicle`, { vehicleId: v11.id }, admin)).body.code, 'seats_mismatch');
+  const v9 = h.expectOk(await h.api.post('manage/vehicles', { type: 'limo', plateNo: '29B-333.33', layoutId: w.layout.id }, admin), 201);
+  assert.equal(h.expectOk(await h.api.put(`manage/trips/${w.trip.id}/vehicle`, { vehicleId: v9.id }, admin)).vehicleId, v9.id);
 });

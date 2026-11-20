@@ -1,9 +1,8 @@
 /**
  * Privacy (110-112): "my data" summary, CSV export of my bookings, and real deletion of a customer account.
  *
- * Deletion removes the account, sessions, saved data (passengers, addresses, receivers, refund account, emergency
- * contact), notifications, messages, reviews, reports, complaints, loyalty, vouchers, waitlist, referrals and
- * every receipt photo. Bookings and parcels are kept only as anonymous financial lines (amounts, trip, seat
+ * Deletion removes the account, sessions, favourite routes, notifications, messages, reviews, reports, complaints,
+ * loyalty, vouchers, waitlist and referrals. Bookings and parcels are kept only as anonymous financial lines (amounts, trip, seat
  * labels) because the operator must reconcile revenue; names, phones and addresses in them are erased.
  * Blocked while a trip is not completed or a refund is pending (112).
  */
@@ -18,24 +17,21 @@ const M = models;
 async function assertDeletable(accountId) {
   const now = new Date();
   const [activeBookings, activeParcels, refunds] = await Promise.all([
-    M.Booking.countDocuments({ customerAccountId: accountId, status: { $in: ['pending_review', 'info_requested', 'seat_lost', 'confirmed'] }, departAt: { $gt: T.addMinutes(now, -1440) } }),
+    M.Booking.countDocuments({ customerAccountId: accountId, status: { $in: ['pending', 'confirmed', 'cancel_requested'] }, departAt: { $gt: T.addMinutes(now, -1440) } }),
     M.Parcel.countDocuments({ senderAccountId: accountId, status: { $in: ['pending', 'accepted', 'received', 'loaded', 'arrived', 'issue'] } }),
     M.Refund.countDocuments({ accountId, status: 'pending' }),
   ]);
   if (activeBookings || activeParcels || refunds) throw conflict('has_active_orders', { activeBookings, activeParcels, pendingRefunds: refunds });
 }
 
-async function purgeCustomer(account) {
+async function purgeCustomer(account, { force = false } = {}) {
   const id = account._id;
-  await assertDeletable(id);
-  const proofs = await M.PaymentProof.find({ accountId: id }).select('_id fileId').lean();
+  if (!force) await assertDeletable(id);
   await withTx(async (session) => {
     const o = { session };
-    await M.FileObject.deleteMany({ $or: [{ ownerAccountId: id }, { _id: { $in: proofs.map((p) => p.fileId) } }] }, o);
-    await M.PaymentProof.deleteMany({ accountId: id }, o);
     await M.Booking.updateMany({ customerAccountId: id }, {
       $set: {
-        note: '', search: '', 'seats.$[].passengerName': '', 'seats.$[].passengerPhone': '', 'seats.$[].note': '', internalNotes: [],
+        note: '', search: '', 'seats.$[].passengerName': '', 'seats.$[].passengerPhone': '', internalNotes: [],
       },
     }, o);
     // Shuttle addresses are personal data too (only where a shuttle exists: a null field cannot take sub-fields).
@@ -43,9 +39,9 @@ async function purgeCustomer(account) {
     await M.Booking.updateMany({ customerAccountId: id, dropShuttle: { $ne: null } }, { $set: { 'dropShuttle.addressText': '', 'dropShuttle.noteText': '' } }, o);
     await M.Booking.updateMany({ customerAccountId: id }, { $set: { customerAccountId: null } }, o);
     await M.Parcel.updateMany({ senderAccountId: id }, { $set: { senderAccountId: null, senderName: '', senderPhone: '', receiverName: '', receiverPhone: '', receiverAddress: '', descriptionText: '', note: '', search: '', pickupShuttle: null, dropShuttle: null } }, o);
-    await M.Refund.updateMany({ accountId: id }, { $set: { accountId: null, refundAccount: null } }, o);
+    await M.Refund.updateMany({ accountId: id }, { $set: { accountId: null } }, o);
     for (const Model of [M.Notification, M.LoyaltyEntry, M.Voucher, M.Waitlist, M.ContactMessage, M.Complaint, M.Review]) await Model.deleteMany({ accountId: id }, o);
-    for (const Model of [M.SavedPassenger, M.SavedAddress, M.SavedReceiver, M.Favorite]) await Model.deleteMany({ accountId: id }, o);
+    await M.FavoriteRoute.deleteMany({ accountId: id }, o);
     await M.Message.deleteMany({ senderAccountId: id }, o);
     await M.Report.deleteMany({ reporterAccountId: id }, o);
     await M.Referral.deleteMany({ $or: [{ referrerAccountId: id }, { referredAccountId: id }] }, o);
@@ -57,22 +53,18 @@ async function purgeCustomer(account) {
   });
 }
 
-/** GET /v1/me/data (111): what the server keeps about me, and how long receipt photos are kept. */
+/** GET /v1/me/data (111): what the server keeps about me. */
 async function myData(auth) {
   const id = auth.accountId;
-  const sys = await require('./settings').get('system');
   const count = (Model, f) => Model.countDocuments(f);
-  const [bookings, parcels, proofs, passengers, addresses, receivers, reviews, messages, notifications] = await Promise.all([
-    count(M.Booking, { customerAccountId: id }), count(M.Parcel, { senderAccountId: id }), count(M.PaymentProof, { accountId: id }),
-    count(M.SavedPassenger, { accountId: id }), count(M.SavedAddress, { accountId: id }), count(M.SavedReceiver, { accountId: id }),
+  const [bookings, parcels, reviews, messages, notifications] = await Promise.all([
+    count(M.Booking, { customerAccountId: id }), count(M.Parcel, { senderAccountId: id }),
     count(M.Review, { accountId: id }), count(M.Message, { senderAccountId: id }), count(M.Notification, { accountId: id }),
   ]);
   const a = auth.account;
   return {
     account: { email: a.email, displayName: a.displayName, phone: a.phone, birthDate: a.birthDate, gender: a.gender, createdAt: iso(a.createdAt) },
-    hasRefundAccount: !!a.refundAccount, hasEmergencyContact: !!a.emergencyContact,
-    counts: { bookings, parcels, receiptPhotos: proofs, savedPassengers: passengers, savedAddresses: addresses, savedReceivers: receivers, reviews, messages, notifications },
-    retention: { receiptPhotoDays: sys.proofRetentionDays, rule: 'days_after_trip_completed' },
+    counts: { bookings, parcels, reviews, messages, notifications },
     deletion: { inApp: 'DELETE /v1/me', web: '/account/delete' },
   };
 }

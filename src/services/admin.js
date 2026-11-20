@@ -4,8 +4,9 @@
  */
 const models = require('../models');
 const { Checker } = require('../lib/validate');
-const { notFound, invalid } = require('../lib/errors');
-const { uuid, iso, noAccent } = require('../lib/util');
+const { notFound, invalid, conflict } = require('../lib/errors');
+const password = require('../lib/password');
+const { uuid, iso, noAccent, normalizePhone } = require('../lib/util');
 const T = require('../lib/time');
 const tokens = require('./tokens');
 const notify = require('./notify');
@@ -32,6 +33,7 @@ async function customerStats(ids) {
 
 const presentCustomer = (a, s) => ({
   id: a._id, email: a.email, displayName: a.displayName, phone: a.phone, status: a.status, suspendReason: a.suspendReason, adminNote: a.adminNote || '',
+  locked: a.status === 'suspended', lockReason: a.suspendReason || null,
   bookings: s?.bookings || 0, completedTrips: s?.completed || 0, totalSpent: s?.spent || 0, kind: (s?.bookings || 0) > 1 ? 'returning' : 'new',
   firstBookingAt: iso(s?.first), lastBookingAt: iso(s?.last), lastLoginAt: iso(a.lastLoginAt), createdAt: iso(a.createdAt),
 });
@@ -57,7 +59,7 @@ async function getCustomer(id) {
   const parcels = await Parcel.find({ senderAccountId: id }).sort({ createdAt: -1 }).limit(10).lean();
   const history = await models.AdminAction.find({ targetType: 'account', targetId: id }).sort({ at: -1 }).limit(20).lean();
   return {
-    ...presentCustomer(a, stats.get(id)), refundAccount: a.refundAccount || null, emergencyContact: a.emergencyContact || null,
+    ...presentCustomer(a, stats.get(id)),
     loyalty: await require('./loyalty').summary(id),
     recentBookings: await require('./bookings').presentMany(recent, { admin: true }),
     recentParcels: (await require('./parcels').presentMany(parcels, { admin: true })).map((x) => ({ id: x.id, code: x.code, status: x.status, fee: x.fee, createdAt: x.createdAt })),
@@ -65,13 +67,83 @@ async function getCustomer(id) {
   };
 }
 
-async function updateCustomerNote(auth, id, body) {
+/** POST /manage/customers — the admin creates a customer (same rules as sign-up) with an initial password. */
+async function createCustomer(auth, body) {
+  const accounts = require('./accounts');
   const c = new Checker();
-  const adminNote = c.str(body, 'adminNote', { max: 2000 }) ?? '';
+  const displayName = c.str(body, 'displayName', { required: true, max: 60 });
+  const rawPhone = c.phone(body, 'phone', { required: true });
+  const phone = rawPhone ? normalizePhone(rawPhone) : null;
+  if (rawPhone && !phone) c.fail('phone', 'invalid_format');
+  const email = c.email(body, 'email') || null;
+  const plain = c.password(body, 'password');
   c.done();
-  const r = await Account.updateOne({ _id: id, role: 'customer' }, { $set: { adminNote, updatedAt: new Date() } });
-  if (!r.matchedCount) throw notFound();
+  if (email && (await Account.exists({ email }))) throw conflict('email_taken');
+  await accounts.assertPhoneFree(phone);
+  const now = new Date();
+  const doc = {
+    _id: uuid(), email, passwordHash: await password.hash(plain), displayName, phone, role: 'customer', preferredLanguage: 'vi', status: 'active',
+    avatarColor: accounts.COLORS[Math.floor(Math.random() * accounts.COLORS.length)], referralCode: await accounts.newReferralCode(), termsAcceptedAt: now, passwordChangedAt: now, createdAt: now, updatedAt: now,
+  };
+  doc.search = accounts.searchOf(doc);
+  try { await Account.create(doc); } catch (err) { if (err.code === 11000) throw accounts.dupError(err); throw err; }
+  await require('./loyalty').welcomeVoucher(doc._id).catch(() => {});
+  await audit.log(auth, 'account', doc._id, 'customer_created', phone);
+  return getCustomer(doc._id);
+}
+
+/** PATCH /manage/customers/:id — name, phone, email, note; `password` resets it (empty = keep). Signs the customer out on a reset. */
+async function updateCustomer(auth, id, body) {
+  const accounts = require('./accounts');
+  const a = await Account.findOne({ _id: id, role: 'customer' }).lean();
+  if (!a) throw notFound();
+  const c = new Checker();
+  const set = {};
+  if (body?.displayName !== undefined) set.displayName = c.str(body, 'displayName', { required: true, max: 60 });
+  if (body?.phone !== undefined) {
+    const raw = c.phone(body, 'phone', { required: true });
+    set.phone = raw ? normalizePhone(raw) : null;
+    if (raw && !set.phone) c.fail('phone', 'invalid_format');
+  }
+  if (body?.email !== undefined) set.email = c.email(body, 'email') || null;
+  if (body?.adminNote !== undefined) set.adminNote = c.str(body, 'adminNote', { max: 2000 }) || '';
+  const plain = typeof body?.password === 'string' && body.password !== '' ? c.password(body, 'password') : null;
+  c.done();
+  if (set.email && set.email !== a.email && (await Account.exists({ email: set.email, _id: { $ne: id } }))) throw conflict('email_taken');
+  if (set.phone && set.phone !== a.phone) await accounts.assertPhoneFree(set.phone, id);
+  if (plain) Object.assign(set, { passwordHash: await password.hash(plain), passwordChangedAt: new Date() });
+  set.search = accounts.searchOf({ ...a, ...set });
+  set.updatedAt = new Date();
+  try { await Account.updateOne({ _id: id }, { $set: set }); } catch (err) { if (err.code === 11000) throw accounts.dupError(err); throw err; }
+  if (plain) await tokens.revoke({ accountId: id }, 'password_reset_by_admin');
+  await audit.log(auth, 'account', id, plain ? 'customer_password_reset' : 'customer_updated', '');
   return getCustomer(id);
+}
+
+/** POST /manage/customers/:id/reset-password { password? } — a temporary password when none is given (shown once). */
+async function resetCustomerPassword(auth, id, body) {
+  const accounts = require('./accounts');
+  const a = await Account.findOne({ _id: id, role: 'customer' }).lean();
+  if (!a) throw notFound();
+  const c = new Checker();
+  const given = typeof body?.password === 'string' && body.password !== '' ? c.password(body, 'password') : null;
+  c.done();
+  const plain = given || accounts.tempPassword();
+  await Account.updateOne({ _id: id }, { $set: { passwordHash: await password.hash(plain), passwordChangedAt: new Date(), updatedAt: new Date() } });
+  await tokens.revoke({ accountId: id }, 'password_reset_by_admin');
+  await models.ContactMessage.updateMany({ accountId: id, subject: 'password_reset', status: 'open' }, { $set: { status: 'closed', repliedBy: auth.accountId, repliedAt: new Date() } });
+  await audit.log(auth, 'account', id, 'customer_password_reset', '');
+  return given ? { status: 'ok' } : { temporaryPassword: plain };
+}
+
+/** DELETE /manage/customers/:id — only when the customer has no booking or parcel at all (otherwise lock the account). */
+async function deleteCustomer(auth, id) {
+  const a = await Account.findOne({ _id: id, role: 'customer' }).lean();
+  if (!a) throw notFound();
+  const [bookings, parcels] = await Promise.all([Booking.countDocuments({ customerAccountId: id }), Parcel.countDocuments({ senderAccountId: id })]);
+  if (bookings || parcels) throw conflict('in_use', { bookings, parcels, hint: 'lock_instead' });
+  await require('./privacy').purgeCustomer(a, { force: true });
+  await audit.log(auth, 'account', id, 'customer_deleted', a.phone || a.email || '');
 }
 
 /** Suspend / unsuspend a customer (226) with a reason; sessions are revoked at once. */
@@ -219,9 +291,7 @@ async function onboarding(auth) {
   ]);
   const marks = new Set(auth.account.onboardingMarks || []);
   const steps = [
-    { key: 'change_password', done: !auth.account.mustChangePassword },
     { key: 'operator_profile', done: !!all.operator.name && !!all.operator.phone },
-    { key: 'bank_info', done: !!all.bank.bankCode && !!all.bank.accountNo && !!all.bank.holderName },
     { key: 'offices', done: offices > 0 },
     { key: 'vehicles', done: vehicles > 0 },
     { key: 'drivers', done: drivers > 0 },
@@ -342,6 +412,7 @@ async function resetChecklist(auth, tripId) {
 }
 
 module.exports = {
-  listCustomers, getCustomer, updateCustomerNote, setSuspended, suspend, search, parseCsv, importCsv, onboarding, markOnboarding,
+  createCustomer, updateCustomer, resetCustomerPassword, deleteCustomer,
+  listCustomers, getCustomer, setSuspended, suspend, search, parseCsv, importCsv, onboarding, markOnboarding,
   addLog, listLogs, broadcast, driverText, checkItem, resetChecklist,
 };

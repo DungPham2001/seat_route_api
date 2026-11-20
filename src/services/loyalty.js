@@ -1,6 +1,7 @@
 /**
  * Points, tiers, voucher wallet, referrals, personal stats (90-94, 227, 230, 231).
- * The points ledger is append-only (balance = sum); a cancelled booking adds a negative entry. Never cash.
+ * Points: total / 10000 when a booking is approved; the ledger is append-only (balance = sum); a cancelled booking adds a
+ * negative entry. Tiers Bạc >= 80, Vàng >= 200, Kim cương >= 500. Never converted to cash.
  */
 const models = require('../models');
 const { Checker } = require('../lib/validate');
@@ -16,7 +17,7 @@ const { LoyaltyEntry, Voucher, Promotion, Referral, Booking, Account, Route } = 
 async function balances(accountId) {
   const rows = await LoyaltyEntry.aggregate([
     { $match: { accountId } },
-    { $group: { _id: null, points: { $sum: '$points' }, earned: { $sum: { $cond: [{ $eq: ['$reason', 'trip'] }, '$points', 0] } } } },
+    { $group: { _id: null, points: { $sum: '$points' }, earned: { $sum: { $cond: [{ $in: ['$reason', ['booking', 'cancel_reversal']] }, '$points', 0] } } } },
   ]);
   return { points: rows[0]?.points || 0, earned: rows[0]?.earned || 0 };
 }
@@ -43,7 +44,6 @@ async function summary(accountId) {
     enabled: rule.enabled, points: b.points, lifetimeEarned: b.earned,
     tier: current ? { name: current.name, minPoints: current.minPoints, benefitText: current.benefitText } : null,
     nextTier: next ? { name: next.name, minPoints: next.minPoints, pointsNeeded: next.minPoints - b.earned } : null,
-    redeemValuePerPoint: rule.redeemValuePerPoint,
   };
 }
 
@@ -57,23 +57,27 @@ async function detail(auth, query) {
   ]);
   return {
     ...s,
-    rules: { earnPointsPer10k: rule.earnPointsPer10k, redeemValuePerPoint: rule.redeemValuePerPoint, maxRedeemPercent: rule.maxRedeemPercent },
+    rules: { earnPointsPer10k: rule.earnPointsPer10k, note: 'points_are_not_cash' },
     tiers: rule.tiers,
     entries: page(rows.map((e) => ({ id: e._id, points: e.points, reason: e.reason, refType: e.refType, refId: e.refId, at: iso(e.at) })), p, total),
   };
 }
 
-/** Trip completed: points for the booking, and the referral reward on the first completed trip. */
-async function onTripCompleted(b) {
+/** Booking approved (or made at the counter for a customer): points = total / 10000, added once. */
+async function onBookingApproved(b) {
   const rule = await settings.get('loyalty');
-  if (rule.enabled && b.paidAmount > 0) {
-    const points = Math.floor((b.paidAmount / 10000) * (rule.earnPointsPer10k || 0));
-    if (points > 0) {
-      await LoyaltyEntry.create({ _id: uuid(), accountId: b.customerAccountId, points, reason: 'trip', refType: 'booking', refId: b._id, at: new Date() });
-      await Booking.updateOne({ _id: b._id }, { $set: { pointsAwarded: points } });
-      await notify.push(b.customerAccountId, 'order', 'points_earned', { refType: 'booking', refId: b._id, params: { code: b.code, points } });
-    }
+  if (!rule.enabled || !b.customerAccountId || !(b.totalAmount > 0) || b.pointsAwarded > 0) return 0;
+  const points = Math.floor((b.totalAmount / 10000) * (rule.earnPointsPer10k || 0));
+  if (points > 0) {
+    await LoyaltyEntry.create({ _id: uuid(), accountId: b.customerAccountId, points, reason: 'booking', refType: 'booking', refId: b._id, at: new Date() });
+    await Booking.updateOne({ _id: b._id }, { $set: { pointsAwarded: points } });
+    await notify.push(b.customerAccountId, 'order', 'points_earned', { refType: 'booking', refId: b._id, params: { code: b.code, points } });
   }
+  return points;
+}
+
+/** Trip completed: the referral reward on the first completed trip. */
+async function onTripCompleted(b) {
   const ref = await Referral.findOne({ referredAccountId: b.customerAccountId, status: 'pending' }).lean();
   if (ref) {
     const rr = await settings.get('referral');
@@ -93,6 +97,18 @@ async function giveVoucher(accountId, promotionId, source = 'admin') {
   await Voucher.create(doc);
   await notify.push(accountId, 'promo', 'voucher_received', { refType: 'promotion', refId: promotionId, params: { code: promo.code } });
   return doc;
+}
+
+/** New customers get the CHAOBAN code (10% off, once) in their wallet; the promotion is created on first use. */
+async function welcomeVoucher(accountId) {
+  let promo = await Promotion.findOne({ code: 'CHAOBAN' }).lean();
+  if (!promo) {
+    const now = new Date();
+    promo = { _id: uuid(), code: 'CHAOBAN', title: 'Chào bạn mới', description: 'Giảm 10% cho đơn đầu tiên', kind: 'percent', value: 10, minAmount: 0, perUserLimit: 1, usedCount: 0, audience: 'wallet', isActive: true, search: 'chaoban chao ban moi', createdAt: now, updatedAt: now };
+    try { await Promotion.create(promo); } catch (err) { if (err.code !== 11000) throw err; promo = await Promotion.findOne({ code: 'CHAOBAN' }).lean(); }
+  }
+  if (await Voucher.exists({ accountId, promotionId: promo._id })) return null;
+  return giveVoucher(accountId, promo._id, 'welcome');
 }
 
 const presentPromo = (p) => ({
@@ -178,4 +194,4 @@ async function stats(auth) {
   };
 }
 
-module.exports = { summary, detail, onTripCompleted, giveVoucher, activePromotions, vouchers, saveVoucher, grant, referral, stats, presentPromo, balances };
+module.exports = { summary, detail, welcomeVoucher, onBookingApproved, onTripCompleted, giveVoucher, activePromotions, vouchers, saveVoucher, grant, referral, stats, presentPromo, balances };

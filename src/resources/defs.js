@@ -95,8 +95,8 @@ add('seatLayouts', {
   model: 'SeatLayout', collection: 'seat_layouts', path: '/manage/seat-layouts', role: 'admin',
   fields: {
     name: { type: 'string', required: true, max: 80 },
-    rows: { type: 'int', required: true, min: 1, max: 30 },
-    cols: { type: 'int', required: true, min: 1, max: 10 },
+    rows: { type: 'int', required: true, min: 2, max: 7 },
+    cols: { type: 'int', required: true, min: 2, max: 4 },
     seats: { type: 'objects', required: true, of: seatFields, maxItems: 80 },
     note: { type: 'string', max: 300 },
   },
@@ -117,7 +117,9 @@ add('seatLayouts', {
       ids.add(s.id);
       cells.add(`${s.row}:${s.col}`);
     });
-    if (!seats.some((s) => s?.isSellable)) bad.push({ field: 'seats', code: 'required' });
+    if (seats.filter((s) => s?.isSellable).length < 2) bad.push({ field: 'seats', code: 'too_few_seats' });
+    // Cell (0,0) is the driver's place: it can hold a non-sellable marker, never a seat for sale.
+    if (seats.some((s) => s?.isSellable && s.row === 0 && s.col === 0)) bad.push({ field: 'seats', code: 'driver_cell' });
     if (bad.length) throw invalid(bad);
   },
   dependents: [{ model: 'Vehicle', field: 'layoutId', label: 'vehicles' }],
@@ -126,10 +128,15 @@ add('seatLayouts', {
 add('vehicles', {
   model: 'Vehicle', collection: 'vehicles', path: '/manage/vehicles', role: 'admin',
   fields: {
+    type: { type: 'enum', values: ['limo', 'shuttle'], def: 'limo' }, // limo: has a seat layout and runs routes; shuttle: capacity only
     plateNo: { type: 'string', required: true, max: 20 },
-    kindLabel: { type: 'string', required: true, max: 80 },
-    layoutId: { type: 'ref', ref: 'SeatLayout', required: true },
+    name: { type: 'string', max: 80 }, // model name ("Dcar Limousine"), separate from the kind
+    kindLabel: { type: 'string', max: 80 }, // e.g. "Limousine 9 chỗ"
+    layoutId: { type: 'ref', ref: 'SeatLayout' },
+    capacity: { type: 'int', min: 1, max: 60 }, // shuttle only
     seatCount: { type: 'int', readOnly: true },
+    frontSurcharge: { type: 'money', def: 30000 },
+    vipSurcharge: { type: 'money', def: 60000 },
     year: { type: 'int', min: 1980, max: 2100 },
     colorText: { type: 'string', max: 40 },
     status: { type: 'enum', values: ['active', 'maintenance', 'retired'], def: 'active' },
@@ -143,13 +150,25 @@ add('vehicles', {
     parcelMaxPieces: { type: 'int', max: 1000 },
     note: { type: 'text', max: 1000 },
   },
-  search: ['plateNo', 'kindLabel'], filters: ['status', 'layoutId'], sort: { plateNo: 1 },
+  search: ['plateNo', 'name', 'kindLabel'], filters: ['type', 'status', 'layoutId'], sort: { plateNo: 1 },
   unique: [['plateNo']],
-  validate: async (d) => {
-    if (d.layoutId) {
-      const layout = await mongoose.model('SeatLayout').findById(d.layoutId).lean();
-      d.seatCount = (layout?.seats || []).filter((s) => s.isSellable).length;
+  validate: async (d, ctx) => {
+    if (d.plateNo) d.plateNo = d.plateNo.toUpperCase();
+    const type = d.type ?? ctx.existing?.type ?? 'limo';
+    const layoutId = d.layoutId ?? ctx.existing?.layoutId;
+    const capacity = d.capacity ?? ctx.existing?.capacity;
+    if (type === 'limo') {
+      if (!layoutId) throw invalid([{ field: 'layoutId', code: 'required' }]);
+      const layout = await mongoose.model('SeatLayout').findById(layoutId).lean();
+      if (!layout) throw invalid([{ field: 'layoutId', code: 'not_found' }]);
+      d.seatCount = (layout.seats || []).filter((x) => x.isSellable).length + 1; // + the driver's place
+      d.capacity = null;
+    } else {
+      if (!capacity) throw invalid([{ field: 'capacity', code: 'required' }]);
+      d.seatCount = capacity;
+      d.layoutId = null;
     }
+    if (!d.kindLabel && !ctx.existing?.kindLabel) d.kindLabel = type === 'shuttle' ? 'Xe trung chuyển' : `Limousine ${d.seatCount ?? ''} chỗ`.trim();
   },
   dependents: [{ model: 'Trip', field: 'vehicleId', label: 'trips' }],
 });
@@ -248,7 +267,7 @@ add('routes', {
 add('promotions', {
   model: 'Promotion', collection: 'promotions', path: '/admin/promotions', role: 'admin',
   fields: {
-    code: { type: 'string', required: true, max: 20, pattern: /^[A-Za-z0-9_-]{3,20}$/ },
+    code: { type: 'string', required: true, max: 20, pattern: /^[A-Za-z0-9]{4,20}$/ },
     title: { type: 'string', max: 120 },
     description: { type: 'text', max: 1000 },
     kind: { type: 'enum', values: ['percent', 'amount'], required: true },
@@ -359,6 +378,15 @@ add('parcelCategories', {
   dependents: [{ model: 'Parcel', field: 'categoryId', label: 'parcels' }],
 });
 
+add('prohibitedItems', {
+  model: 'ProhibitedItem', collection: 'prohibited_items', path: '/admin/prohibited-items', role: 'admin',
+  fields: {
+    text: { type: 'string', required: true, max: 300 },
+    sortOrder: { type: 'int', def: 0 },
+  },
+  search: ['text'], sort: { sortOrder: 1, createdAt: 1 }, pageSize: 200,
+});
+
 add('parcelRates', {
   model: 'ParcelRate', collection: 'parcel_rates', path: '/admin/parcel-rates', role: 'admin',
   fields: {
@@ -402,63 +430,6 @@ add('tripExpenses', {
     note: { type: 'string', max: 300 },
   },
   filters: ['category'], sort: { createdAt: 1 },
-});
-
-// ---------- saved data in the customer's Profile (83, 84, 86, 87) ----------
-
-add('passengers', {
-  model: 'SavedPassenger', collection: 'saved_passengers', path: '/me/passengers', role: 'customer', owner: 'accountId',
-  fields: {
-    name: { type: 'string', required: true, max: 80 },
-    phone: { type: 'phone', normalize: false },
-    note: { type: 'string', max: 300 },
-    isChild: { type: 'bool', def: false },
-  },
-  search: ['name', 'phone'], sort: { name: 1 },
-});
-
-add('addresses', {
-  model: 'SavedAddress', collection: 'saved_addresses', path: '/me/addresses', role: 'customer', owner: 'accountId',
-  fields: {
-    label: { type: 'string', required: true, max: 40 },
-    zoneId: { type: 'ref', ref: 'ShuttleZone' },
-    addressText: { type: 'string', required: true, max: 300 },
-    noteText: { type: 'string', max: 300 },
-  },
-  search: ['label', 'addressText'], sort: { createdAt: 1 },
-});
-
-add('receivers', {
-  model: 'SavedReceiver', collection: 'saved_receivers', path: '/me/receivers', role: 'customer', owner: 'accountId',
-  fields: {
-    name: { type: 'string', required: true, max: 80 },
-    phone: { type: 'phone', required: true, normalize: false },
-    addressText: { type: 'string', max: 300 },
-    note: { type: 'string', max: 300 },
-  },
-  search: ['name', 'phone'], sort: { name: 1 },
-});
-
-add('favorites', {
-  model: 'Favorite', collection: 'favorites', path: '/me/favorites', role: 'customer', owner: 'accountId',
-  fields: {
-    kind: { type: 'enum', values: ['route', 'office'], required: true },
-    fromProvinceId: { type: 'ref', ref: 'Province' },
-    toProvinceId: { type: 'ref', ref: 'Province' },
-    officeId: { type: 'ref', ref: 'Office' },
-    label: { type: 'string', max: 80 },
-  },
-  filters: ['kind'], sort: { createdAt: 1 },
-  validate: async (d, ctx) => {
-    const kind = d.kind ?? ctx.existing?.kind;
-    if (kind === 'route' && !(d.fromProvinceId ?? ctx.existing?.fromProvinceId)) throw invalid([{ field: 'fromProvinceId', code: 'required' }]);
-    if (kind === 'route' && !(d.toProvinceId ?? ctx.existing?.toProvinceId)) throw invalid([{ field: 'toProvinceId', code: 'required' }]);
-    if (kind === 'office' && !(d.officeId ?? ctx.existing?.officeId)) throw invalid([{ field: 'officeId', code: 'required' }]);
-    if (!ctx.existing) {
-      const n = await mongoose.model('Favorite').countDocuments({ accountId: ctx.auth.accountId });
-      if (n >= 50) throw conflict('limit_reached');
-    }
-  },
 });
 
 const models = Object.fromEntries(Object.values(R).map((r) => [r.def.model, r.model]));

@@ -41,9 +41,6 @@ module.exports = {
     from: process.env.SMTP_FROM || 'SeatRoute <no-reply@example.com>',
   },
 
-  /** Signed links to private files (payment proofs). */
-  fileLinkSec: num(process.env.FILE_LINK_SECONDS, 300),
-  uploadsPerHour: num(process.env.UPLOADS_PER_HOUR, 30),
   /** Recurring trips are generated this many days ahead, never further. */
   seriesWindowDays: num(process.env.SERIES_WINDOW_DAYS, 45),
 
@@ -52,10 +49,10 @@ module.exports = {
    * (`PATCH /v1/admin/settings`); these are only the initial values.
    */
   defaults: {
-    payDeadlineMinutes: 60,
-    reviewDeadlineMinutes: 120,
-    maxProofBytes: 3 * 1024 * 1024,
-    proofRetentionDays: 90,
+    bookingLeadHours: 4, // bookings close this many hours before departure (customers and counter bookings)
+    maxSeatsPerBooking: 6,
+    bookDaysAhead: 7, // customers can book at most this many days ahead
+    reviewDeadlineMinutes: 30, // a pending booking older than this is marked overdue in the admin queue
     driverRestMinutes: 60,
     shuttleRegisterHoursBefore: 3,
     shuttleFeeRefundable: true,
@@ -63,8 +60,8 @@ module.exports = {
     parcelUnclaimedHours: 24,
     parcelDefaultMaxKg: 100,
     parcelDefaultMaxPieces: 20,
-    salesCloseMinutesBefore: 120,
-    salesOpenDaysBefore: 30,
+    salesCloseMinutesBefore: 240,
+    salesOpenDaysBefore: 7,
   },
 
   cronSecret: process.env.CRON_SECRET || '',

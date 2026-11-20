@@ -19,10 +19,10 @@ async function main() {
   if (existing && existing.role !== 'admin') throw new Error('this email belongs to a customer account');
   const now = new Date();
   if (existing) {
-    await models.Account.updateOne({ _id: existing._id }, { $set: { passwordHash: await password.hash(plain), mustChangePassword: true, status: 'active', updatedAt: now } });
+    await models.Account.updateOne({ _id: existing._id }, { $set: { passwordHash: await password.hash(plain), status: 'active', updatedAt: now } });
     await models.Session.updateMany({ accountId: existing._id, revokedAt: null }, { $set: { revokedAt: now, revokeReason: 'password_reset' } });
   } else {
-    await models.Account.create({ _id: uuid(), email: email.toLowerCase(), passwordHash: await password.hash(plain), displayName: name, role: 'admin', preferredLanguage: 'vi', status: 'active', mustChangePassword: true, search: noAccent(`${name} ${email}`), passwordChangedAt: now, createdAt: now, updatedAt: now });
+    await models.Account.create({ _id: uuid(), email: email.toLowerCase(), passwordHash: await password.hash(plain), displayName: name, role: 'admin', preferredLanguage: 'vi', status: 'active', search: noAccent(`${name} ${email}`), passwordChangedAt: now, createdAt: now, updatedAt: now });
   }
   console.log(`${existing ? 'Password reset' : 'Admin created'}: ${email.toLowerCase()}\ntemporary password: ${plain}`);
   await mongoose.disconnect();

@@ -5,8 +5,9 @@
  * Trip capacity is checked atomically when accepting (conditional $inc on trip.parcelLoad).
  * The pickup code is random, only its hash is stored, shown to the sender when created (or regenerated).
  *
- * status:    pending -> accepted -> received -> loaded -> arrived -> delivered  (cancelled, rejected, issue)
- * payStatus: unpaid -> pending_review (receipt sent) -> paid      (cash at the office: recorded by the admin)
+ * status: pending -> accepted -> received -> loaded -> arrived -> delivered  (cancelled, rejected, issue)
+ * Payment: the sender brings the goods to the counter and pays there; the admin marks `received` and the fee is
+ * recorded as collected (cash or direct transfer). Revenue counts from `received`. Nothing is paid in the app.
  */
 const crypto = require('crypto');
 const models = require('../models');
@@ -17,10 +18,9 @@ const T = require('../lib/time');
 const settings = require('./settings');
 const notify = require('./notify');
 const routesSvc = require('./routes');
-const { buildPayload } = require('../lib/vietqr');
 const { paging, page } = require('../resources/engine');
 
-const { Parcel, ParcelRate, ParcelCategory, Route, Office, Trip, ShuttleZone, OrderEvent, PaymentProof, PaymentRecord, Refund, Account, Receipt } = models;
+const { Parcel, ParcelRate, ParcelCategory, Route, Office, Trip, ShuttleZone, OrderEvent, PaymentRecord, Refund, Account, Receipt } = models;
 
 const ACTIVE = ['pending', 'accepted', 'received', 'loaded', 'arrived', 'issue'];
 const ON_TRIP = ['accepted', 'received', 'loaded', 'arrived', 'delivered', 'issue'];
@@ -146,26 +146,25 @@ async function quote(body) {
 async function presentMany(rows, { admin = false } = {}) {
   if (!rows.length) return [];
   const officeIds = [...new Set(rows.flatMap((p) => [p.fromOfficeId, p.toOfficeId]))];
-  const [offices, routes, trips, cats, events, proofs] = await Promise.all([
+  const [offices, routes, trips, cats, events] = await Promise.all([
     Office.find({ _id: { $in: officeIds } }).lean(),
     Route.find({ _id: { $in: [...new Set(rows.map((p) => p.routeId))] } }).lean(),
     Trip.find({ _id: { $in: rows.map((p) => p.tripId).filter(Boolean) } }).lean(),
     ParcelCategory.find({ _id: { $in: rows.map((p) => p.categoryId).filter(Boolean) } }).lean(),
     OrderEvent.find({ orderType: 'parcel', orderId: { $in: rows.map((p) => p._id) }, ...(admin ? {} : { internal: false }) }).sort({ at: 1 }).lean(),
-    PaymentProof.find({ orderType: 'parcel', orderId: { $in: rows.map((p) => p._id) } }).sort({ uploadedAt: 1 }).lean(),
   ]);
   const om = new Map(offices.map((o) => [o._id, o]));
   const rm = new Map(routes.map((r) => [r._id, r]));
   const tm = new Map(trips.map((t) => [t._id, t]));
   const cm = new Map(cats.map((x) => [x._id, x]));
   const office = (id) => (om.get(id) ? { id, name: om.get(id).name, address: om.get(id).address, phone: om.get(id).phone || '' } : { id, name: '' });
-  const MILESTONES = ['created', 'accepted', 'paid', 'received', 'loaded', 'arrived', 'delivered'];
+  const MILESTONES = ['created', 'accepted', 'received', 'loaded', 'arrived', 'delivered'];
   return rows.map((p) => {
     const trip = p.tripId ? tm.get(p.tripId) : null;
     const ev = events.filter((e) => e.orderId === p._id);
     const at = (k) => ev.find((e) => e.kind === k)?.at || null;
     const out = {
-      id: p._id, code: p.code, status: p.status, payStatus: p.payStatus, payMethod: p.payMethod, source: p.source,
+      id: p._id, code: p.code, status: p.status, paid: (p.paidAmount || 0) > 0, payMethod: p.payMethod, source: p.source,
       sender: { name: p.senderName, phone: p.senderPhone },
       receiver: { name: p.receiverName, phone: p.receiverPhone, addressText: p.receiverAddress || '' },
       route: rm.get(p.routeId) ? { id: p.routeId, name: rm.get(p.routeId).name } : null,
@@ -180,10 +179,8 @@ async function presentMany(rows, { admin = false } = {}) {
       unclaimed: !!p.unclaimed, arrivedAt: iso(p.arrivedAt), deliveredAt: iso(p.deliveredAt),
       timeline: MILESTONES.map((k) => ({ step: k, at: iso(k === 'created' ? p.createdAt : at(k)), done: k === 'created' || !!at(k) })),
       history: ev.map((e) => ({ kind: e.kind, at: iso(e.at), note: e.note, byRole: e.byRole })),
-      proofs: proofs.filter((x) => x.orderId === p._id).map((x) => ({ id: x._id, status: x.status, uploadedAt: iso(x.uploadedAt), rejectReason: x.rejectReason })),
       handoverLocked: (p.handoverFailures || 0) >= 5,
       actions: {
-        uploadProof: ['accepted', 'received'].includes(p.status) && p.payStatus === 'unpaid' && p.source === 'app',
         cancel: ['pending', 'accepted', 'received'].includes(p.status),
         regenerateCode: ACTIVE.includes(p.status),
         reportIssue: ON_TRIP.includes(p.status),
@@ -223,8 +220,8 @@ async function create(auth, body, { idempotencyKey } = {}) {
     _id: uuid(), code: await bookings.newCode('GD', Parcel), senderAccountId: auth.accountId, guestContactId: null, source: 'app',
     senderName: sender.name, senderPhone: normalizePhone(sender.phone) || sender.phone, receiverName: receiver.name, receiverPhone: normalizePhone(receiver.phone) || receiver.phone, receiverAddress: receiver.addressText,
     ...input, pickupShuttle: pickupShuttle && { ...pickupShuttle, id: uuid() }, dropShuttle: dropShuttle && { ...dropShuttle, id: uuid() },
-    estimate, fee: estimate.total, status: 'pending', payStatus: 'unpaid', handoverCodeHash: sha256(code), commitAccepted: true,
-    bankSnapshot: await bookings.bankSnapshot(), policySnapshot: await settings.get('parcel'), createdBy: auth.accountId, createdAt: now, updatedAt: now,
+    estimate, fee: estimate.total, status: 'pending', handoverCodeHash: sha256(code), commitAccepted: true,
+    policySnapshot: await settings.get('parcel'), createdBy: auth.accountId, createdAt: now, updatedAt: now,
   };
   doc.search = noAccent([doc.code, doc.receiverName, doc.receiverPhone, doc.senderName].join(' '));
   await Parcel.create(doc);
@@ -239,7 +236,8 @@ async function list(auth, query) {
   const filter = auth.role === 'admin' ? {} : { senderAccountId: auth.accountId };
   if (query.tab && TABS[query.tab]) Object.assign(filter, TABS[query.tab]);
   if (query.status) filter.status = { $in: String(query.status).split(',') };
-  if (query.payStatus) filter.payStatus = String(query.payStatus);
+  if (query.paid === 'true') filter.paidAmount = { $gt: 0 };
+  if (query.paid === 'false') filter.paidAmount = 0;
   if (auth.role === 'admin') {
     for (const k of ['tripId', 'routeId', 'fromOfficeId', 'toOfficeId', 'source']) if (query[k]) filter[k] = String(query[k]);
     if (T.isDate(query.date)) filter.date = query.date;
@@ -252,18 +250,6 @@ async function list(auth, query) {
 }
 
 const get = async (auth, id) => presentOne(await loadFor(auth, id), { admin: auth.role === 'admin' });
-
-async function paymentInfo(auth, id) {
-  const p = await loadFor(auth, id);
-  if (!['accepted', 'received'].includes(p.status)) throw conflict('invalid_status');
-  const bank = p.bankSnapshot || (await require('./bookings').bankSnapshot());
-  if (!bank) throw conflict('bank_not_configured');
-  return {
-    orderType: 'parcel', orderId: p._id, code: p.code, status: p.status, payStatus: p.payStatus,
-    bank: { code: bank.bankCode, bin: bank.bin, shortName: bank.bankShortName, name: bank.bankName }, accountNo: bank.accountNo, holderName: bank.holderName,
-    amount: p.fee, transferContent: p.code, qrPayload: buildPayload({ bin: bank.bin, accountNo: bank.accountNo, amount: p.fee, content: p.code }), cashAtOffice: true,
-  };
-}
 
 /** Refund for a cancelled parcel: full before the office received the goods, then the operator's percent (66). */
 function cancelPreview(p) {
@@ -337,44 +323,12 @@ async function reportIssue(auth, id, body) {
 
 // ---------- payments ----------
 
-async function onProofStored(p, auth) {
-  await Parcel.updateOne({ _id: p._id }, { $set: { payStatus: 'pending_review', payMethod: 'transfer', updatedAt: new Date() } });
-  await event(p, auth, 'proof_uploaded');
-}
-
 async function markPaid(auth, p, { method, amount, note = '' }) {
   const now = new Date();
-  await Parcel.updateOne({ _id: p._id }, { $set: { payStatus: 'paid', payMethod: method === 'proof' ? 'transfer' : method, paidAmount: amount, updatedAt: now } });
+  await Parcel.updateOne({ _id: p._id }, { $set: { payMethod: method, paidAmount: amount, updatedAt: now } });
   const trip = p.tripId ? await Trip.findById(p.tripId).select('vehicleId').lean() : null;
   await PaymentRecord.create({ _id: uuid(), orderType: 'parcel', orderId: p._id, source: p.source, method, amount, note, tripId: p.tripId, routeId: p.routeId, vehicleId: trip?.vehicleId, departAt: p.departAt, recordedBy: auth.accountId, recordedAt: now });
   await event(p, auth, 'paid', { newValue: { method, amount }, note });
-  await notify.push(p.senderAccountId, 'parcel', 'parcel_paid', { refType: 'parcel', refId: p._id, params: { code: p.code } });
-}
-
-async function approvePayment(auth, proof, note) {
-  const p = await load(proof.orderId);
-  await PaymentProof.updateMany({ orderType: 'parcel', orderId: p._id, status: 'pending' }, { $set: { status: 'approved', reviewedBy: auth.accountId, reviewedAt: new Date() } });
-  if (p.payStatus !== 'paid') await markPaid(auth, p, { method: 'proof', amount: p.fee, note });
-}
-
-async function rejectPayment(auth, proof, reason, stillPending) {
-  const p = await load(proof.orderId);
-  if (!stillPending && p.payStatus === 'pending_review') await Parcel.updateOne({ _id: p._id }, { $set: { payStatus: 'unpaid', updatedAt: new Date() } });
-  await event(p, auth, 'proof_rejected', { note: reason });
-  await notify.push(p.senderAccountId, 'parcel', 'parcel_proof_rejected', { refType: 'parcel', refId: p._id, params: { code: p.code, reason } });
-}
-
-/** POST /manage/parcels/:id/payment { method: cash|transfer, amount?, note } — paid at the office or by direct transfer. */
-async function recordPayment(auth, id, body) {
-  const p = await load(id);
-  if (!['accepted', 'received', 'loaded', 'arrived'].includes(p.status) || p.payStatus === 'paid') throw conflict('invalid_status');
-  const c = new Checker();
-  const method = c.oneOf(body, 'method', ['cash', 'transfer'], { required: true });
-  const amount = c.money(body, 'amount') ?? p.fee;
-  const note = c.str(body, 'note', { max: 300 }) || '';
-  c.done();
-  await markPaid(auth, p, { method, amount, note });
-  return presentOne(await load(id), { admin: true });
 }
 
 // ---------- capacity ----------
@@ -472,12 +426,12 @@ async function setStatus(auth, id, body) {
   const actualWeightKg = c.num(body, 'actualWeightKg', { min: 0.1, max: 10000 });
   const fee = c.money(body, 'fee');
   const feeAdjustReason = c.str(body, 'feeAdjustReason', { max: 300 });
-  const cashAmount = c.money(body, 'cashAmount');
+  const payMethod = c.oneOf(body, 'payMethod', ['cash', 'transfer']) || 'cash';
   c.done();
   if (!NEXT[status].includes(p.status)) throw conflict('invalid_status', { current: p.status });
   const set = { status, updatedAt: new Date() };
   if (status === 'received' && (actualWeightKg !== undefined || fee !== undefined)) {
-    if (p.payStatus === 'paid') throw conflict('invalid_status', { hint: 'already_paid' });
+    if ((p.paidAmount || 0) > 0) throw conflict('invalid_status', { hint: 'already_paid' });
     if (!feeAdjustReason) throw invalid([{ field: 'feeAdjustReason', code: 'required' }]);
     const weight = actualWeightKg ?? weightOf(p);
     const breakdown = await computeFee({ routeId: p.routeId, sizeClass: p.sizeClass, weightKg: weight, declaredValue: p.declaredValue, pickupShuttle: p.pickupShuttle, dropShuttle: p.dropShuttle });
@@ -487,12 +441,12 @@ async function setStatus(auth, id, body) {
     Object.assign(set, { actualWeightKg: weight, fee: fee ?? breakdown.total, feeBreakdown: { ...breakdown, finalFee: fee ?? breakdown.total }, feeAdjustReason });
     await notify.push(p.senderAccountId, 'parcel', 'parcel_fee_adjusted', { refType: 'parcel', refId: id, params: { code: p.code, fee: set.fee, reason: feeAdjustReason } });
   }
-  if (status === 'loaded' && p.payStatus !== 'paid') throw conflict('invalid_status', { hint: 'unpaid' });
   if (status === 'arrived') set.arrivedAt = new Date();
   const r = await Parcel.updateOne({ _id: id, status: p.status }, { $set: set });
   if (!r.modifiedCount) throw conflict('invalid_status');
   await event(p, auth, status, { oldValue: p.status, newValue: status, note });
-  if (status === 'received' && cashAmount !== undefined && p.payStatus !== 'paid') await markPaid(auth, { ...p, ...set }, { method: 'cash', amount: cashAmount, note: 'cash at office' });
+  // The sender pays the fee at the counter when the office takes the goods: that is the moment it counts as revenue.
+  if (status === 'received' && !(p.paidAmount > 0)) await markPaid(auth, { ...p, ...set }, { method: payMethod, amount: set.fee ?? p.fee, note: 'paid at the counter' });
   const trip = p.tripId ? await Trip.findById(p.tripId).lean() : null;
   const office = await Office.findById(p.toOfficeId).lean();
   const l = trip ? T.toLocal(trip.departAt) : {};
@@ -608,7 +562,7 @@ async function adminCreate(auth, body) {
     senderName: sender.name, senderPhone: normalizePhone(sender.phone) || sender.phone, receiverName: receiver.name, receiverPhone: normalizePhone(receiver.phone) || receiver.phone, receiverAddress: receiver.addressText,
     ...input, tripId: trip?._id || null, departAt: trip?.departAt || null, date: trip?.date || input.date, actualWeightKg: input.weightKg,
     pickupShuttle: pickupShuttle && { ...pickupShuttle, id: uuid() }, dropShuttle: dropShuttle && { ...dropShuttle, id: uuid() },
-    estimate: breakdown, fee: finalFee, feeBreakdown: { ...breakdown, finalFee }, feeAdjustReason, status: trip ? 'received' : 'pending', payStatus: 'unpaid',
+    estimate: breakdown, fee: finalFee, feeBreakdown: { ...breakdown, finalFee }, feeAdjustReason, status: trip ? 'received' : 'pending',
     handoverCodeHash: sha256(code), commitAccepted: true, policySnapshot: await settings.get('parcel'), createdBy: auth.accountId, createdAt: now, updatedAt: now,
   };
   doc.search = noAccent([doc.code, doc.receiverName, doc.receiverPhone, doc.senderName, doc.senderPhone].join(' '));
@@ -637,7 +591,7 @@ async function remindUnclaimed() {
 }
 
 module.exports = {
-  ACTIVE, getConfig, quote, computeFee, create, list, get, paymentInfo, getCancelPreview, cancel, regenerateCode, shareText, reportIssue,
-  onProofStored, approvePayment, rejectPayment, recordPayment, accept, reject, setStatus, handover, markUnclaimed, recordIssue, moveTrip,
+  ACTIVE, getConfig, quote, computeFee, create, list, get, getCancelPreview, cancel, regenerateCode, shareText, reportIssue,
+  accept, reject, setStatus, handover, markUnclaimed, recordIssue, moveTrip,
   detachFromTrip, adminCreate, tripParcels, remindUnclaimed, presentMany, presentOne, load,
 };
