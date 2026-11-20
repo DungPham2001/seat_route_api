@@ -555,7 +555,7 @@ Một lần gọi cho cả tab Home (9-19):
 ```json
 {
   "greeting": { "displayName": "Nguyễn Văn An" },
-  "operator": { "name": "Nhà xe Test", "phone": "0241234567" },
+  "operator": { "name": "Nhà xe Test", "phone": "0347218023" },
   "upcomingTrip": { "…": "chi tiết đơn như 5.3", "countdownSeconds": 78480 },
   "todo": [
     { "kind": "waiting_approval", "bookingId": "…", "code": "SR…", "status": "pending", "trip": {…}, "totalAmount": 530000, "reason": null },
