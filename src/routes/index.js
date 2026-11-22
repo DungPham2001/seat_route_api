@@ -20,6 +20,8 @@ const social = require('../services/social');
 const parcels = require('../services/parcels');
 const jobs = require('../services/jobs');
 
+const { notFound } = require('../lib/errors');
+const passengerOnly = (_req, _res, next) => next(config.customersEnabled ? undefined : notFound());
 const r = express.Router();
 r.use(scopeToOperator); // anonymous calls: the default operator (signed-in ones are re-scoped below)
 const h = asyncHandler;
@@ -94,15 +96,15 @@ r.get('/routes/:id/info', h(async (req, res) => res.json(await catalog.routeInfo
 r.get('/faq', h(async (req, res) => res.json(await catalog.faq(req.query.lang === 'en' || req.query.lang === 'vi' ? req.query.lang : req.lang))));
 r.get('/content/:key', h(async (req, res) => res.json(await catalog.content(req.params.key, req.query.lang === 'en' || req.query.lang === 'vi' ? req.query.lang : req.lang))));
 r.get('/announcements', h(async (_req, res) => res.json({ items: await catalog.announcements({ limit: 30 }) })));
-r.get('/reviews', h(async (req, res) => res.json(await social.publicReviews(req.query))));
+r.get('/reviews', passengerOnly, h(async (req, res) => res.json(await social.publicReviews(req.query))));
 
-r.get('/trips', h(async (req, res) => res.json(await trips.search(req.query))));
+r.get('/trips', passengerOnly, h(async (req, res) => res.json(await trips.search(req.query))));
 r.get('/trips/:id', h(async (req, res) => res.json(await trips.detail(req.params.id, { admin: req.auth.role === 'admin' }))));
 r.get('/trips/:id/seats', h(async (req, res) => res.json(await trips.seatMap(req.params.id, req.auth))));
-r.get('/trips/:id/alternatives', h(async (req, res) => res.json(await trips.alternatives(req.params.id, req.query))));
+r.get('/trips/:id/alternatives', passengerOnly, h(async (req, res) => res.json(await trips.alternatives(req.params.id, req.query))));
 
 // Orders: customers see only their own; admins see all.
-r.post('/bookings/quote', h(async (req, res) => res.json(await bookings.quote(req.auth, req.body))));
+r.post('/bookings/quote', passengerOnly, h(async (req, res) => res.json(await bookings.quote(req.auth, req.body))));
 r.get('/bookings', h(async (req, res) => res.json(await bookings.list(req.auth, req.query))));
 r.get('/bookings/:id', h(async (req, res) => res.json(await bookings.get(req.auth, req.params.id))));
 r.get('/bookings/:id/history', h(async (req, res) => res.json(await bookings.history(req.auth, req.params.id))));
@@ -112,14 +114,18 @@ r.post('/bookings/:id/messages', h(async (req, res) => res.status(201).json(awai
 r.patch('/bookings/:id/places', h(async (req, res) => res.json(await bookings.updatePlaces(req.auth, req.params.id, req.body))));
 r.patch('/bookings/:id/shuttle', h(async (req, res) => res.json(await bookings.updateShuttle(req.auth, req.params.id, req.body))));
 r.get('/parcels', h(async (req, res) => res.json(await parcels.list(req.auth, req.query))));
-r.get('/parcels/config', h(async (_req, res) => res.json(await parcels.getConfig())));
-r.post('/parcels/quote', h(async (req, res) => res.json(await parcels.quote(req.body))));
+r.get('/parcels/config', passengerOnly, h(async (_req, res) => res.json(await parcels.getConfig())));
+r.post('/parcels/quote', passengerOnly, h(async (req, res) => res.json(await parcels.quote(req.body))));
 r.get('/parcels/:id', h(async (req, res) => res.json(await parcels.get(req.auth, req.params.id))));
 r.get('/complaints/:id', h(async (req, res) => res.json(await social.getComplaint(req.auth, req.params.id))));
 r.post('/complaints/:id/replies', h(async (req, res) => res.json(await social.replyComplaint(req.auth, req.params.id, req.body))));
 r.post('/reports', h(async (req, res) => res.status(201).json(await social.createReport(req.auth, req.body))));
 
-r.use(require('./customer'));
+// Passenger endpoints (customer.js and the search / quote / waitlist routes above) exist only while CUSTOMERS_ENABLED=1.
+const passenger = express.Router();
+passenger.use((_req, _res, next) => (config.customersEnabled ? next() : next('router')));
+passenger.use(require('./customer'));
+r.use(passenger);
 r.use(require('./manage'));
 
 module.exports = r;

@@ -36,3 +36,8 @@ Trả lời `Wayra-Fleet-yeu-cau-BE.md`. Base URL giữ nguyên `https://seatrou
 * **Danh sách hành khách của chuyến** (`/manage/trips/{id}/manifest`) có `pickup`, `drop` từng người để tài xế đi đón.
 * Mục Văn phòng và Vùng trung chuyển không còn trong app; API cũ còn nhưng không dùng.
 * **Đặt vé lúc nào cũng được:** bỏ chốt 4 giờ trước giờ chạy và giới hạn 7 ngày. Chỉ chặn khi chuyến đã hủy / đang chạy / đã xong, hoặc chủ nhà xe đóng bán (`salesClosed`, lỗi `409 trip_not_on_sale`). Không còn `booking_closed`.
+
+## Cập nhật 2026-11-22: bỏ hành khách, chỉ còn chủ nhà xe
+* Đăng ký chỉ tạo nhà xe. Tài khoản hành khách cũ không đăng nhập được nữa (`403`). Các API phía khách trả `404` (bật lại bằng biến môi trường `CUSTOMERS_ENABLED=1` nếu cần).
+* **Đặt hộ khách:** `POST /manage/bookings { tripId, pickup, drop, seats, guest:{name,phone}, payMethod? }`. Có `payMethod` → đã thu tiền ngay. **Không có `payMethod`** → đặt trước, thu sau: đơn `confirmed`, `paid:false`, hiện ở mục "Chờ thu tiền", thu bằng `POST /manage/bookings/{id}/collect { method }`.
+* Đơn do chủ nhà xe tạo nên không còn đơn "chờ duyệt" hay "yêu cầu hủy" mới; các màn đó có thể trống.

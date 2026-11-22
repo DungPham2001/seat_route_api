@@ -973,7 +973,7 @@ async function upsertGuest(auth, guest) {
 
 /**
  * POST /manage/bookings — a booking made at the counter: confirmed at once, seats 'sold' all or nothing, source 'counter'.
- * Also closed `bookingLeadHours` before departure. payMethod: cash | transfer | free (free needs compReason and is not revenue).
+ * payMethod: cash | transfer | free (free needs compReason and is not revenue); leave it out to book now and collect later.
  * `specialPrice` (per seat, 133) also needs compReason.
  */
 async function adminCreate(auth, body) {
@@ -983,7 +983,8 @@ async function adminCreate(auth, body) {
   const customerAccountId = c.id(body, 'customerAccountId');
   const guest = g ? { name: c.str(g, 'name', { field: 'guest.name', required: true, max: 80 }), phone: c.phone(g, 'phone', { field: 'guest.phone', required: true }), note: c.str(g, 'note', { field: 'guest.note', max: 300 }) || '' } : null;
   if (!guest && !customerAccountId) c.fail('guest', 'required');
-  const payMethod = c.oneOf(body, 'payMethod', ['cash', 'transfer', 'free'], { required: true });
+  const payMethod = c.oneOf(body, 'payMethod', ['cash', 'transfer', 'free']) || null; // none: the passenger pays later ("chờ thu tiền")
+  const unpaid = !payMethod;
   const specialPrice = c.money(body, 'specialPrice');
   const compReason = c.str(body, 'compReason', { max: 300 }) || null;
   if ((payMethod === 'free' || specialPrice !== undefined) && !compReason) c.fail('compReason', 'required');
@@ -1004,7 +1005,7 @@ async function adminCreate(auth, body) {
     seats: bookingSeats(prep.seats, prep.q, name, phone), pickupOfficeId: input.pickupOfficeId, dropOfficeId: input.dropOfficeId, pickup: input.pickup, drop: input.drop,
     pickupShuttle: prep.pickupShuttle, dropShuttle: prep.dropShuttle, amounts: prep.q.amounts, totalAmount: prep.q.amounts.totalAmount,
     promoCode: prep.q.promo?.code || null, promotionId: prep.q.promo?.id || null, voucherId: prep.q.voucherId, note: input.note, internalNotes: [],
-    confirmedAt: now, payMethod, compReason, paidAmount: prep.q.amounts.totalAmount, paidAt: now, cancelPolicySnapshot: await policySnapshot(), notices: [], createdBy: auth.accountId, createdAt: now, updatedAt: now,
+    confirmedAt: now, payMethod, compReason, paidAmount: unpaid ? 0 : prep.q.amounts.totalAmount, paidAt: unpaid ? null : now, cancelPolicySnapshot: await policySnapshot(), notices: [], createdBy: auth.accountId, createdAt: now, updatedAt: now,
   };
   doc.search = searchOf(doc, prep.route.name);
   await holdSeats(doc, 'sold');
@@ -1012,7 +1013,7 @@ async function adminCreate(auth, body) {
     await withTx(async (session) => {
       await Booking.create([doc], { session });
       await consumeDiscounts(doc, prep.q, session);
-      await PaymentRecord.create([{
+      if (!unpaid) await PaymentRecord.create([{
         _id: uuid(), orderType: 'booking', orderId: doc._id, source: 'counter', method: payMethod, amount: payMethod === 'free' ? 0 : doc.totalAmount,
         compValue: override ? Math.max(0, listPrice - doc.totalAmount) : 0, reason: compReason, note: paymentNote,
         tripId: doc.tripId, routeId: doc.routeId, vehicleId: prep.trip.vehicleId, departAt: doc.departAt, recordedBy: auth.accountId, recordedAt: now,
@@ -1023,7 +1024,7 @@ async function adminCreate(auth, body) {
     throw err;
   }
   await event(doc, auth, 'created_by_admin', { newValue: { seats: doc.seats.map((s) => s.label), payMethod, total: doc.totalAmount }, note: compReason || '' });
-  if (doc.customerAccountId && payMethod !== 'free') await require('./loyalty').onBookingApproved(doc);
+  if (doc.customerAccountId && payMethod && payMethod !== 'free') await require('./loyalty').onBookingApproved(doc);
   const out = await presentOne(doc, { admin: true });
   return { ...out, shareText: await shareText(auth, doc._id, 'vi') };
 }

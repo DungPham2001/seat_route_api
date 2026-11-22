@@ -804,7 +804,7 @@ Lọc: `status=pending|confirmed|cancel_requested|completed|rejected|cancelled`,
 | Ghi hoàn tiền | `/manage/bookings/{id}/refund` | `{ amount?, note }` |
 | Đổi ghế / chuyển chuyến | `/manage/bookings/{id}/assign-seats` · `/move` | `{ seats:[{seatId,…}] }` · `{ tripId, seats }` |
 | Ghi chú nội bộ | `/manage/bookings/{id}/notes` | `{ text }` |
-| Đặt hộ tại quầy | `POST /manage/bookings` | `{ tripId, pickup:{address*,note?,lat?,lng?}, drop:{address*,note?,lat?,lng?}, seats:[{seatId,passengerName,passengerPhone?}], guest:{name,phone}, payMethod:"cash"\|"transfer" }` → đơn đã duyệt và **đã thu** ngay |
+| Đặt hộ tại quầy | `POST /manage/bookings` | `{ tripId, pickup:{address*,note?,lat?,lng?}, drop:{address*,note?,lat?,lng?}, seats:[{seatId,passengerName,passengerPhone?}], guest:{name,phone}, payMethod:"cash"\|"transfer" }` → có `payMethod`: đã duyệt và **đã thu** ngay; **bỏ `payMethod`**: đặt trước, thu sau (hiện ở "Chờ thu tiền") |
 | **Đổi địa chỉ đón / trả** | `PATCH /bookings/{id}/places` | `{ pickup?:{address,note?}, drop?:{address,note?} }` (tới khi xe chạy) |
 
 Trường quyết định nút bấm trên đơn: `status`, `paid`, `paidAt`, `payMethod`, `canCollect`, `payAtCounter`, `waitingMinutes`, `overdue`, `actions{cancel, cancelNeedsApproval, editShuttle, review, chat}`. Tên khách: `customer{displayName,phone}` hoặc `guest{name,phone}` (đặt hộ).

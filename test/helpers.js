@@ -13,6 +13,8 @@ if (!process.env.MONGOMS_SYSTEM_BINARY && fs.existsSync('/opt/homebrew/bin/mongo
   process.env.MONGOMS_VERSION = process.env.MONGOMS_VERSION || '9.0.4';
 }
 
+// The passenger endpoints are off by default (Wayra Fleet is operator-only); the older tests still exercise them.
+process.env.CUSTOMERS_ENABLED = '1';
 const mongoose = require('mongoose');
 const request = require('supertest');
 const { MongoMemoryReplSet } = require('mongodb-memory-server');

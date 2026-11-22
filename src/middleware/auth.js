@@ -5,6 +5,7 @@
  * - suspended account            -> 403 account_suspended
  * - role check on every endpoint (customer / admin), never only hidden buttons in the app.
  */
+const config = require('../config');
 const { Account, Session } = require('../models');
 const { verifyAccess } = require('../services/tokens');
 const { asyncHandler, unauthorized, forbidden } = require('../lib/errors');
@@ -22,6 +23,7 @@ async function resolve(req) {
   if (!session || session.revokedAt || session.accountId !== claims.sub || !account) throw unauthorized('session_revoked');
   if (session.absoluteExpiresAt <= new Date()) throw unauthorized('session_expired');
   if (account.status === 'suspended') throw forbidden('account_suspended');
+  if (account.role === 'customer' && !config.customersEnabled) throw forbidden('forbidden');
   if (Date.now() - new Date(session.lastSeenAt).getTime() > TOUCH_MS) {
     Session.updateOne({ _id: session._id }, { $set: { lastSeenAt: new Date() } }).catch(() => {});
   }

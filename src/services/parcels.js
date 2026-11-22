@@ -306,7 +306,7 @@ async function shareText(auth, id, { handoverCode = null, lang = 'vi' } = {}) {
     `${en ? 'Parcel code' : 'Mã đơn gửi đồ'}: ${p.code}`,
     handoverCode ? `${en ? 'Pickup code' : 'Mã nhận hàng'}: ${handoverCode}` : null,
     `${en ? 'Receiver' : 'Người nhận'}: ${p.receiverName} - ${p.receiverPhone}`,
-    `${en ? 'Pick up at' : 'Nhận tại'}: ${v.toOffice.name}, ${v.toOffice.address || ''}`,
+    v.toOffice ? `${en ? 'Pick up at' : 'Nhận tại'}: ${v.toOffice.name}, ${v.toOffice.address || ''}` : p.receiverAddress ? `${en ? 'Deliver to' : 'Giao tới'}: ${p.receiverAddress}` : null,
     eta ? `${en ? 'Expected' : 'Dự kiến tới'}: ${eta.time} ${eta.date}` : null,
   ].filter(Boolean).join('\n');
 }

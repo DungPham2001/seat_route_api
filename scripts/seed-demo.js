@@ -20,8 +20,6 @@ const { tempPassword } = require('../src/services/accounts');
 const T = require('../src/lib/time');
 
 const ADMIN_EMAIL = process.env.SEED_ADMIN_EMAIL || 'quantri@nhaxevietnam.vn';
-const CUSTOMER_EMAIL = process.env.SEED_CUSTOMER_EMAIL || 'minhquan.nguyen@nhaxevietnam.vn';
-const CUSTOMER2_EMAIL = process.env.SEED_CUSTOMER2_EMAIL || 'thibinh.tran@nhaxevietnam.vn';
 
 async function call(method, path, token, body) {
   const r = request(app)[method](`/v1/${path}`).set('Accept-Language', 'vi');
@@ -90,27 +88,18 @@ async function main() {
   for (const text of ['Chất cháy nổ, vũ khí', 'Chất ma túy, hàng cấm theo pháp luật', 'Động vật sống']) await call('post', 'admin/prohibited-items', A, { text });
   await call('post', 'admin/announcements', A, { title: 'Chào mừng', body: 'Nhà xe Việt Nam mở bán vé trên ứng dụng.', kind: 'news', notify: false });
 
-  const customerPass = tempPassword();
-  await models.Account.deleteOne({ email: CUSTOMER_EMAIL });
-  const C = (await call('post', 'auth/register', null, { email: CUSTOMER_EMAIL, password: customerPass, displayName: 'Nguyễn Minh Quân', phone: '0909000111', acceptTerms: true, accountType: 'customer' })).tokens.accessToken;
-  const customer2Pass = tempPassword();
-  await models.Account.deleteOne({ email: CUSTOMER2_EMAIL });
-  const C2 = (await call('post', 'auth/register', null, { email: CUSTOMER2_EMAIL, password: customer2Pass, displayName: 'Trần Thị Bình', phone: '0909000222', acceptTerms: true, accountType: 'customer' })).tokens.accessToken;
+  await sampleOrders({ A, route, back, start });
+  await moreTrips({ A, layout, hnId, start });
 
-  await sampleOrders({ A, C, C2, route, back, start });
-  await moreTrips({ A, C, C2, layout, hnId, start });
-
-  console.log('Data created. Accounts (shown once):');
+  console.log('Data created. Account (shown once):');
   console.log(`  admin:      ${ADMIN_EMAIL} / ${adminPass}`);
-  console.log(`  customer:   ${CUSTOMER_EMAIL} / ${customerPass}   (SĐT 0909000111)`);
-  console.log(`  customer 2: ${CUSTOMER2_EMAIL} / ${customer2Pass}   (SĐT 0909000222)`);
   return mongoose.disconnect();
 }
 
 // ---------- sample orders: every state the screens need ----------
 
 /** More named trips (from -> to, no routes or offices to set up) with door-to-door counter bookings. */
-async function moreTrips({ A, C, C2, layout, hnId, start }) {
+async function moreTrips({ A, layout, hnId, start }) {
   const d3 = await call('post', 'admin/staff', A, { kind: 'limo_driver', name: 'Nguyễn Văn Tuấn', phone: '0912000444', licenseClassText: 'D', licenseExpiresOn: '2031-01-31', positionText: 'Tài xế', joinedOn: '2024-02-01' });
   const d4 = await call('post', 'admin/staff', A, { kind: 'limo_driver', name: 'Hoàng Đức Minh', phone: '0912000555', licenseClassText: 'D', licenseExpiresOn: '2030-09-30', positionText: 'Tài xế', joinedOn: '2024-05-20' });
   const car = (plateNo, color, d) => call('post', 'manage/vehicles', A, { type: 'limo', plateNo, name: 'Limousine VIP', kindLabel: 'Limousine 9 chỗ', frontSurcharge: 30000, vipSurcharge: 60000, layoutId: layout.id, year: 2024, colorText: color, amenities: ['wifi', 'sạc', 'nước'], defaultDriverId: d.id, parcelMaxKg: 100, parcelMaxPieces: 20, docDates: [{ kind: 'registration', expiresOn: '2027-08-01' }, { kind: 'insurance', expiresOn: '2027-06-15' }] });
@@ -132,58 +121,43 @@ async function moreTrips({ A, C, C2, layout, hnId, start }) {
     const trip = await call('post', 'manage/trips', A, { name: p.name, fromProvinceId: p.from, toProvinceId: p.to, durationMinutes: p.minutes, date, departTime: p.time, vehicleId: p.v.id, driverId: p.d.id, basePrice: p.price });
     const [g, pl] = [guests[i], places[i]];
     await call('post', 'manage/bookings', A, { tripId: trip.id, pickup: { address: pl[0], note: 'Gọi trước khi đến' }, drop: { address: pl[1] }, seats: [{ seatId: 'D1', passengerName: g[0] }, { seatId: 'D2', passengerName: g[0] }], guest: { name: g[0], phone: g[1] }, payMethod: i % 2 ? 'transfer' : 'cash' });
-    const o = await call('post', 'bookings', i % 2 ? C : C2, { tripId: trip.id, pickup: { address: pl[1], note: '' }, drop: { address: pl[0] }, seats: ['A1'] });
-    if (i % 3 === 0) await call('post', `manage/bookings/${o.id}/approve`, A, {});
+    // the second passenger of each trip has not paid yet: shows up under "Chờ thu tiền"
+    const h2 = guests[(i + 1) % guests.length];
+    await call('post', 'manage/bookings', A, { tripId: trip.id, pickup: { address: pl[1], note: '' }, drop: { address: pl[0] }, seats: [{ seatId: 'A1', passengerName: h2[0] }], guest: { name: h2[0], phone: h2[1] }, ...(i % 2 ? { payMethod: 'cash' } : {}) });
   }
   console.log('More trips: 5 named trips (Hải Phòng, Ninh Bình) with door-to-door bookings.');
 }
 
-async function sampleOrders({ A, C, C2, route, back, start }) {
+async function sampleOrders({ A, route, back, start }) {
   const day = (n) => T.addDays(start, n);
   const tripAt = async (date, routeId, time) => (await call('get', `manage/trips?from=${date}&to=${date}`, A)).items.find((t) => (t.route?.id || t.routeId) === routeId && t.departTime === time);
-  const book = (token, trip, seats, extra = {}) => call('post', 'bookings', token, { tripId: trip.id, pickup: { address: extra.pickup || '12 Cầu Giấy, Hà Nội', note: 'Gọi trước 10 phút' }, drop: { address: extra.drop || '5 Lý Bôn, TP Thái Bình' }, seats, ...(extra.body || {}) });
-
   const t1 = await tripAt(day(1), route.id, '06:00');
   const t2 = await tripAt(day(2), route.id, '13:00');
   const t3 = await tripAt(day(3), back.id, '09:30');
   const t4 = await tripAt(day(4), route.id, '06:00');
   if (!t1 || !t2 || !t3 || !t4) throw new Error('recurring trips were not generated');
 
-  // 1. Approved and paid at the counter (revenue counted), with a chat.
-  const b1 = await book(C, t1, ['A1', 'A2']);
-  await call('post', `manage/bookings/${b1.id}/approve`, A, { note: 'Đã duyệt' });
-  await call('post', `manage/bookings/${b1.id}/collect`, A, { method: 'cash' });
-  await call('post', `bookings/${b1.id}/messages`, C, { text: 'Cho em gửi thêm 1 vali nhỏ được không ạ?' });
-  await call('post', `bookings/${b1.id}/messages`, A, { text: 'Được ạ, anh/chị mang ra văn phòng trước giờ xe chạy 10 phút.' });
-  // 2. Approved but not paid yet (queue "Chờ thu tiền").
-  const b2 = await book(C, t2, ['B1']);
-  await call('post', `manage/bookings/${b2.id}/approve`, A, {});
-  // 3. Pending: waiting for the admin (queue "Cần xác nhận").
-  await book(C, t2, ['C1', 'C2']);
-  await book(C2, t3, ['A1'], { pickup: '9 Lý Bôn, TP Thái Bình', drop: '20 Phạm Hùng, Nam Từ Liêm, Hà Nội' });
-  // 4. Rejected.
-  const b4 = await book(C2, t4, ['B2']);
-  await call('post', `manage/bookings/${b4.id}/reject`, A, { reason: 'Chuyến đã đủ khách đoàn' });
-  // 5. Paid, then the customer asks to cancel (cancel_requested).
-  const b5 = await book(C2, t4, ['D1']);
-  await call('post', `manage/bookings/${b5.id}/approve`, A, {});
-  await call('post', `manage/bookings/${b5.id}/collect`, A, { method: 'transfer' });
-  await call('post', `bookings/${b5.id}/cancel`, C2, { note: 'Em bận việc đột xuất' });
-  // 6. Cancelled by the customer while still pending.
-  const b6 = await book(C, t4, ['D2']);
-  await call('post', `bookings/${b6.id}/cancel`, C, {});
-  // 7. Counter booking paid in cash (source counter).
-  await call('post', 'manage/bookings', A, { tripId: t1.id, pickup: { address: '88 Giải Phóng, Hoàng Mai, Hà Nội' }, drop: { address: 'Thị trấn Diêm Điền, Thái Thụy' }, seats: [{ seatId: 'B2', passengerName: 'Bà Lan' }], guest: { name: 'Bà Lan', phone: '0988777666' }, payMethod: 'cash' });
-
-  // Parcels: one waiting for acceptance, one accepted and received at the counter (fee collected).
-  const parcel = (token, receiver, extra = {}) => call('post', 'parcels', token, {
-    routeId: route.id, date: day(1), descriptionText: extra.text || 'Quần áo, đồ dùng', weightKg: extra.kg || 3, sizeClass: 'small', receiver, commitAccepted: true,
+  // The owner books for passengers who phone or walk in: paid on the spot, or "book now, collect later".
+  const book = (trip, seats, who, from, to, extra = {}) => call('post', 'manage/bookings', A, {
+    tripId: trip.id, pickup: { address: from, note: extra.note || '' }, drop: { address: to }, seats: seats.map((id) => ({ seatId: id, passengerName: who[0] })), guest: { name: who[0], phone: who[1] }, ...extra.body,
   });
-  await parcel(C, { name: 'Nguyễn Thị Hoa', phone: '0977000111' });
-  const p2 = await parcel(C2, { name: 'Lê Văn Hùng', phone: '0977000222' }, { text: 'Giấy tờ', kg: 1 });
-  await call('post', `manage/parcels/${p2.id}/accept`, A, { tripId: t1.id });
-  await call('post', `manage/parcels/${p2.id}/status`, A, { status: 'received', payMethod: 'cash' });
-  console.log('Sample orders: pending x3, approved + paid, approved unpaid, rejected, cancel requested, cancelled, counter booking, 2 parcels.');
+  await book(t1, ['A1', 'A2'], ['Nguyễn Minh Quân', '0909000111'], '12 Cầu Giấy, Hà Nội', '5 Lý Bôn, TP Thái Bình', { note: 'Gọi trước 10 phút', body: { payMethod: 'cash' } });
+  await book(t1, ['B2'], ['Bà Lan', '0988777666'], '88 Giải Phóng, Hoàng Mai, Hà Nội', 'Thị trấn Diêm Điền, Thái Thụy', { body: { payMethod: 'cash' } });
+  await book(t2, ['B1'], ['Trần Thị Bình', '0909000222'], '9 Lý Bôn, TP Thái Bình', '20 Phạm Hùng, Nam Từ Liêm, Hà Nội', { body: { payMethod: 'transfer' } });
+  // Not paid yet ("Chờ thu tiền")
+  await book(t2, ['C1', 'C2'], ['Lê Thị Hương', '0912111222'], '45 Nguyễn Chí Thanh, Đống Đa, Hà Nội', '102 Quang Trung, TP Thái Bình');
+  await book(t3, ['A1'], ['Phạm Quốc Việt', '0912333444'], '9 Lý Bôn, TP Thái Bình', '20 Phạm Hùng, Nam Từ Liêm, Hà Nội');
+  // Cancelled by the owner (never paid: no refund).
+  const gone = await book(t4, ['D2'], ['Đặng Văn Long', '0912555666'], '3 Tây Sơn, Đống Đa, Hà Nội', '8 Trần Phú, TP Thái Bình');
+  await call('post', `manage/bookings/${gone.id}/cancel`, A, { reason: 'Khách đổi lịch' });
+
+  // Parcels taken at the counter: the fee is paid on the spot.
+  const parcel = (sender, receiver, text, kg, payMethod) => call('post', 'manage/parcels', A, {
+    routeId: route.id, date: day(1), descriptionText: text, weightKg: kg, sizeClass: 'small', sender, receiver, payMethod,
+  });
+  await parcel({ name: 'Nguyễn Minh Quân', phone: '0909000111' }, { name: 'Nguyễn Thị Hoa', phone: '0977000111', addressText: '14 Trần Hưng Đạo, TP Thái Bình' }, 'Quần áo, đồ dùng', 3, 'cash');
+  await parcel({ name: 'Trần Thị Bình', phone: '0909000222' }, { name: 'Lê Văn Hùng', phone: '0977000222', addressText: '2 Lê Lợi, TP Thái Bình' }, 'Giấy tờ', 1, 'transfer');
+  console.log('Sample orders: paid (cash / transfer) x3, not paid yet x2, cancelled, 2 parcels.');
 }
 
 main().catch((e) => {

@@ -89,3 +89,32 @@ test('a trip is just "from -> to" with a name; offices are not needed to book', 
   assert.equal(b.trip.name, 'Sáng Hà Nội - Thái Bình');
   assert.equal(h.expectOk(await h.api.get('manage/dashboard', a)).recentBookings[0].routeName, 'Sáng Hà Nội - Thái Bình');
 });
+
+test('operator-only: passenger sign-up, login and endpoints are off; the owner books now and collects later', async () => {
+  const config = require('../src/config');
+  const a = h.expectOk(await operator(1), 201).tokens.accessToken;
+  const w = await h.world(a);
+  const old = await h.customer('khach@example.com', 'Khách Cũ', '0901234567'); // created while the passenger app existed
+  config.customersEnabled = false;
+  try {
+    const reg = await h.api.post('auth/register', { phone: '0901234999', password: h.PASSWORD, displayName: 'Khách', acceptTerms: true, accountType: 'customer' });
+    assert.equal(reg.status, 400);
+    assert.equal(reg.body.fields[0].field, 'accountType');
+    assert.equal((await h.api.post('auth/login', { login: 'khach@example.com', password: h.PASSWORD })).status, 403);
+    assert.equal((await h.api.get('me', old.token)).status, 403); // an old token stops working too
+    assert.equal((await h.api.get('trips', a)).status, 404);
+    assert.equal((await h.api.post('bookings', { tripId: w.trip.id, seats: ['D1'] }, a)).status, 404);
+    // Book now, collect later: no payMethod -> confirmed and unpaid, listed under "chờ thu tiền".
+    const place = { pickup: { address: '12 Cầu Giấy, Hà Nội' }, drop: { address: '5 Lý Bôn, Thái Bình' } };
+    const b = h.expectOk(await h.api.post('manage/bookings', { tripId: w.trip.id, ...place, seats: ['D1'], guest: { name: 'Bà Lan', phone: '0988777666' } }, a), 201);
+    assert.equal(b.status, 'confirmed');
+    assert.equal(b.paid, false);
+    assert.equal(h.expectOk(await h.api.get('manage/bookings?payment=unpaid', a)).total, 1);
+    assert.equal(h.expectOk(await h.api.get('manage/inbox/counts', a)).toCollect, 1);
+    const paid = h.expectOk(await h.api.post(`manage/bookings/${b.id}/collect`, { method: 'cash' }, a));
+    assert.equal(paid.paid, true);
+    assert.equal(h.expectOk(await h.api.get('manage/inbox/counts', a)).toCollect, 0);
+  } finally {
+    config.customersEnabled = true;
+  }
+});

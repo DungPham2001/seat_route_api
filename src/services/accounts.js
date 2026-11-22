@@ -81,7 +81,7 @@ async function register(body, { lang, idempotencyKey: headerKey }) {
   if (rawPhone && !phone) c.fail('phone', 'invalid_format');
   const preferredLanguage = c.oneOf(body, 'preferredLanguage', LANGS, { def: lang });
   if (body?.acceptTerms !== true) c.fail('acceptTerms', 'terms_required');
-  const accountType = c.oneOf(body, 'accountType', ['operator', 'customer'], { def: 'operator' });
+  const accountType = c.oneOf(body, 'accountType', config.customersEnabled ? ['operator', 'customer'] : ['operator'], { def: 'operator' });
   const isOperator = accountType === 'operator';
   const referralCode = isOperator ? null : c.str(body, 'referralCode', { max: 20 });
   const extra = isOperator ? { companyName: c.str(body, 'companyName', { max: 120 }), address: c.str(body, 'address', { max: 300 }), taxCode: c.str(body, 'taxCode', { max: 30 }) } : {};
@@ -177,6 +177,7 @@ async function login(body) {
   c.done();
   const account = await checkCredentials(id, plain);
   if (account.status === 'suspended') throw new AppError(403, 'account_suspended', { reason: account.suspendReason || null });
+  if (account.role === 'customer' && !config.customersEnabled) throw forbidden('forbidden'); // passenger accounts are retired
   Account.updateOne({ _id: account._id }, { $set: { lastLoginAt: new Date() } }).catch(() => {});
   const t = await tokens.openSession(account, device);
   return { ...(await profile(account)), tokens: t };
