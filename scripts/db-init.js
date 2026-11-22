@@ -30,7 +30,7 @@ async function main() {
     console.log(`provinces: ${PROVINCES.length} added`);
   }
   if (!(await models.Account.exists({ role: 'admin' }))) {
-    const email = (process.env.DEFAULT_ADMIN_EMAIL || 'admin@seatroute.local').toLowerCase();
+    const email = (process.env.DEFAULT_ADMIN_EMAIL || 'admin@nhaxevietnam.local').toLowerCase();
     const plain = tempPassword();
     const now = new Date();
     const id = uuid();

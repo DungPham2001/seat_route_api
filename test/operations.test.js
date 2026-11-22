@@ -66,7 +66,7 @@ test('recurring series, overlap check with force, admin moves a booking, cancell
   assert.equal(ex.exceptions.length, 1);
 
   const c = await h.customer();
-  const b = h.expectOk(await h.api.post('bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, seats: ['D1'] }, c.token), 201);
+  const b = h.expectOk(await h.api.post('bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, pickup: { address: '12 Cầu Giấy, Hà Nội' }, drop: { address: '5 Lý Bôn, Thái Bình' }, seats: ['D1'] }, c.token), 201);
   h.expectOk(await h.api.post(`manage/bookings/${b.id}/approve`, {}, admin));
   h.expectOk(await h.api.post(`manage/bookings/${b.id}/collect`, { method: 'cash' }, admin));
   const target = h.expectOk(await h.api.get(`trips?fromProvinceId=${w.hn.id}&toProvinceId=${w.tb.id}&date=${w.date}`, c.token)).items.find((t) => t.departTime === '14:00');
@@ -95,7 +95,7 @@ test('privacy: blocked while a trip is active; deletion erases personal data', a
   const w = await h.world(admin);
   const c = await h.customer();
   h.expectOk(await h.api.post(`me/favorite-routes/${w.route.id}`, {}, c.token), 201);
-  const b = h.expectOk(await h.api.post('bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, seats: ['A1'] }, c.token), 201);
+  const b = h.expectOk(await h.api.post('bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, pickup: { address: '12 Cầu Giấy, Hà Nội' }, drop: { address: '5 Lý Bôn, Thái Bình' }, seats: ['A1'] }, c.token), 201);
   const data = h.expectOk(await h.api.get('me/data', c.token));
   assert.equal(data.counts.bookings, 1);
   const blocked = await h.api.del('me', { password: h.PASSWORD }, c.token);

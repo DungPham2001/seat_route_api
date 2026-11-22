@@ -43,6 +43,8 @@ async function purge(account, { force = false } = {}) {
     }, o);
     // Shuttle addresses are personal data too (only where a shuttle exists: a null field cannot take sub-fields).
     await M.Booking.updateMany({ customerAccountId: id, pickupShuttle: { $ne: null } }, { $set: { 'pickupShuttle.addressText': '', 'pickupShuttle.noteText': '' } }, o);
+    await M.Booking.updateMany({ customerAccountId: id, pickup: { $ne: null } }, { $set: { 'pickup.address': '', 'pickup.note': '' } }, o);
+    await M.Booking.updateMany({ customerAccountId: id, drop: { $ne: null } }, { $set: { 'drop.address': '', 'drop.note': '' } }, o);
     await M.Booking.updateMany({ customerAccountId: id, dropShuttle: { $ne: null } }, { $set: { 'dropShuttle.addressText': '', 'dropShuttle.noteText': '' } }, o);
     await M.Booking.updateMany({ customerAccountId: id }, { $set: { customerAccountId: null } }, o);
     await M.Parcel.updateMany({ senderAccountId: id }, { $set: { senderAccountId: null, senderName: '', senderPhone: '', receiverName: '', receiverPhone: '', receiverAddress: '', descriptionText: '', note: '', search: '', pickupShuttle: null, dropShuttle: null } }, o);

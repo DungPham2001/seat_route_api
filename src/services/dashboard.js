@@ -165,13 +165,13 @@ async function dashboard(query) {
     tripsToday: {
       count: tripItems.length, passengers: seatsUsed, fillPercent: seatsTotal ? Math.round((seatsUsed / seatsTotal) * 100) : 0,
       unassigned: tripItems.filter((t) => t.needsVehicle || t.needsDriver).length,
-      items: tripItems.map((t) => ({ id: t.id, route: t.route?.name, departTime: t.departTime, status: t.status, tripStatus: t.tripStatus, seats: t.seats, fillPercent: t.fillPercent, needsVehicle: t.needsVehicle, needsDriver: t.needsDriver })),
+      items: tripItems.map((t) => ({ id: t.id, route: t.route?.name, name: t.name, departTime: t.departTime, status: t.status, tripStatus: t.tripStatus, seats: t.seats, fillPercent: t.fillPercent, needsVehicle: t.needsVehicle, needsDriver: t.needsDriver })),
     },
     recentBookings: (await require('./bookings').presentMany(recent, { admin: true })).map((b) => ({
       id: b.id, code: b.code, status: b.status, source: b.source, totalAmount: b.totalAmount, paid: b.paid, createdAt: b.createdAt,
       customer: b.customer ? { displayName: b.customer.displayName, phone: b.customer.phone } : b.guest ? { displayName: b.guest.name, phone: b.guest.phone } : null,
       passengers: (b.seats || []).map((x) => ({ name: x.passengerName || '', seat: x.label })),
-      routeName: b.trip?.route?.name || '', departAt: b.trip?.departAt || null, trip: b.trip,
+      routeName: b.trip?.name || b.trip?.route?.name || '', departAt: b.trip?.departAt || null, trip: b.trip,
     })),
     toCollect: await unpaidSummary(),
     longestWaiting: waiting.map((b) => ({ bookingId: b._id, code: b.code, amount: b.totalAmount, createdAt: iso(b.createdAt), waitingMinutes: Math.round((Date.now() - b.createdAt) / 60000) })),

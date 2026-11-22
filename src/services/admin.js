@@ -384,7 +384,7 @@ async function driverText(tripId, lang = 'vi') {
     `${en ? 'Vehicle' : 'Xe'}: ${vehicle?.plateNo || '-'}  ${en ? 'Driver' : 'Tài xế'}: ${driver?.name || '-'}`,
     '',
     `${en ? 'PASSENGERS' : 'HÀNH KHÁCH'} (${manifest.total})`,
-    ...manifest.items.map((p) => `${p.seatLabel}. ${p.passengerName} - ${p.passengerPhone || ''} - ${en ? 'board at' : 'lên'} ${p.pickupOffice} → ${p.dropOffice}${p.note ? ` (${p.note})` : ''}`),
+    ...manifest.items.map((p) => `${p.seatLabel}. ${p.passengerName} - ${p.passengerPhone || ''} - ${p.pickup?.address ? `${en ? 'pick up' : 'đón'}: ${p.pickup.address}${p.drop?.address ? ` → ${en ? 'drop' : 'trả'}: ${p.drop.address}` : ''}` : p.pickupOffice ? `${en ? 'board at' : 'lên'} ${p.pickupOffice} → ${p.dropOffice}` : ''}${p.note ? ` (${p.note})` : ''}`),
   ];
   const sh = (title, groups) => {
     if (!groups.length) return;

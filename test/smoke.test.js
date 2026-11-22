@@ -12,7 +12,7 @@ test('every endpoint answers without a server error', async () => {
   const c = await h.customer();
   const C = c.token;
   h.expectOk(await h.api.post('admin/parcel-rates', { routeId: w.route.id, sizeClass: 'small', maxWeightKg: 10, price: 40000 }, A), 201);
-  const b = h.expectOk(await h.api.post('bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, seats: ['A1'] }, C), 201);
+  const b = h.expectOk(await h.api.post('bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, pickup: { address: '12 Cầu Giấy, Hà Nội' }, drop: { address: '5 Lý Bôn, Thái Bình' }, seats: ['A1'] }, C), 201);
   const p = h.expectOk(await h.api.post('parcels', { routeId: w.route.id, date: w.date, fromOfficeId: w.o1.id, toOfficeId: w.o3.id, descriptionText: 'Áo', weightKg: 2, sizeClass: 'small', receiver: { name: 'Hoa', phone: '0977000111' }, commitAccepted: true }, C), 201);
   const msg = h.expectOk(await h.api.post(`bookings/${b.id}/messages`, { text: 'Cho em gửi thêm vali' }, C), 201);
   h.expectOk(await h.api.post(`bookings/${b.id}/messages`, { text: 'Được ạ' }, A), 201);

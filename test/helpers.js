@@ -106,4 +106,6 @@ async function world(admin) {
   return { hn, tb, o1, o2, o3, zone, layout, driver, vehicle, route, trip, date };
 }
 
-module.exports = { start, stop, reset, api, app, request, models, PASSWORD, expectOk, adminToken, customer, world, noAccent };
+const addDays = (n) => T.addDays(T.today(), n);
+
+module.exports = { province, addDays, start, stop, reset, api, app, request, models, PASSWORD, expectOk, adminToken, customer, world, noAccent };

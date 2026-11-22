@@ -172,7 +172,7 @@ async function grant(auth, promotionId, body) {
 async function referral(auth, lang = 'vi') {
   const [rule, rows, op] = await Promise.all([settings.get('referral'), Referral.find({ referrerAccountId: auth.accountId }).lean(), settings.get('operator')]);
   const code = auth.account.referralCode;
-  const name = op.name || 'SeatRoute';
+  const name = op.name || 'Nhà xe Việt Nam';
   return {
     enabled: rule.enabled, code, invited: rows.length, rewarded: rows.filter((r) => r.status === 'rewarded').length, maxPerReferrer: rule.maxPerReferrer,
     shareText: lang === 'en' ? `Book limo seats with ${name}. Sign up with my code ${code} to get a discount after your first trip.` : `Đặt ghế limo của ${name}. Đăng ký với mã giới thiệu ${code} để nhận mã giảm giá sau chuyến đầu tiên.`,

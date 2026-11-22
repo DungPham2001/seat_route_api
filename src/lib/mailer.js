@@ -39,14 +39,14 @@ function when(date, lang) {
   return `${p.hour}:${p.minute}, ${p.day}/${p.month}/${p.year} (${suffix})`;
 }
 
-const footer = { vi: 'Email tự động từ SeatRoute, vui lòng không trả lời.', en: 'Automated email from SeatRoute, please do not reply.' };
+const footer = { vi: 'Email tự động từ Nhà xe Việt Nam, vui lòng không trả lời.', en: 'Automated email from Nhà xe Việt Nam, please do not reply.' };
 
 /** Shared HTML frame (table layout + inline styles: what email clients render reliably). */
 function layout(lang, inner) {
   return `<!doctype html><html><body style="margin:0;padding:0;background:#f4f4f2">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f2;padding:24px 12px"><tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background:#ffffff;border-radius:12px;font-family:Arial,Helvetica,sans-serif;color:#1d1d1b">
-<tr><td style="padding:24px 28px 8px;font-size:20px;font-weight:bold;color:#1e4f8a">SeatRoute</td></tr>
+<tr><td style="padding:24px 28px 8px;font-size:20px;font-weight:bold;color:#1e4f8a">Nhà xe Việt Nam</td></tr>
 <tr><td style="padding:8px 28px;font-size:15px;line-height:1.55">${inner}</td></tr>
 <tr><td style="padding:16px 28px 24px;font-size:12px;color:#8a8a84;border-top:1px solid #ececea">${esc(footer[lang])}</td></tr>
 </table></td></tr></table></body></html>`;
@@ -57,20 +57,20 @@ const para = (s, muted = false) => `<p style="margin:0 0 12px${muted ? ';color:#
 
 const resetCopy = {
   vi: {
-    subject: (c) => `${c} là mã đặt lại mật khẩu SeatRoute của bạn`,
+    subject: (c) => `${c} là mã đặt lại mật khẩu Nhà xe Việt Nam của bạn`,
     hello: (n) => (n ? `Xin chào ${n},` : 'Xin chào,'),
-    intro: 'Chúng tôi vừa nhận được yêu cầu đặt lại mật khẩu cho tài khoản SeatRoute của bạn. Nhập mã dưới đây trong ứng dụng để tạo mật khẩu mới:',
+    intro: 'Chúng tôi vừa nhận được yêu cầu đặt lại mật khẩu cho tài khoản Nhà xe Việt Nam của bạn. Nhập mã dưới đây trong ứng dụng để tạo mật khẩu mới:',
     expiry: (m) => `Mã có hiệu lực trong ${m} phút và chỉ dùng được một lần.`,
     notYou: 'Không phải bạn yêu cầu? Hãy bỏ qua email này, mật khẩu của bạn vẫn giữ nguyên và không ai có thể đổi được nếu không có mã.',
-    never: 'SeatRoute không bao giờ hỏi mã này qua điện thoại, tin nhắn hay Zalo. Đừng chia sẻ mã cho bất kỳ ai.',
+    never: 'Nhà xe Việt Nam không bao giờ hỏi mã này qua điện thoại, tin nhắn hay Zalo. Đừng chia sẻ mã cho bất kỳ ai.',
   },
   en: {
-    subject: (c) => `${c} is your SeatRoute password reset code`,
+    subject: (c) => `${c} is your Nhà xe Việt Nam password reset code`,
     hello: (n) => (n ? `Hi ${n},` : 'Hi,'),
-    intro: 'We received a request to reset the password of your SeatRoute account. Enter this code in the app to choose a new password:',
+    intro: 'We received a request to reset the password of your Nhà xe Việt Nam account. Enter this code in the app to choose a new password:',
     expiry: (m) => `The code expires in ${m} minutes and can be used only once.`,
     notYou: "Didn't ask for this? Just ignore this email. Your password stays the same and nobody can change it without this code.",
-    never: 'SeatRoute will never ask for this code by phone or message. Do not share it with anyone.',
+    never: 'Nhà xe Việt Nam will never ask for this code by phone or message. Do not share it with anyone.',
   },
 };
 
@@ -88,9 +88,9 @@ ${para(t.expiry(minutes))}${para(t.notYou, true)}${para(t.never, true)}`);
 
 const changedCopy = {
   vi: {
-    subject: 'Mật khẩu SeatRoute của bạn đã được thay đổi',
+    subject: 'Mật khẩu Nhà xe Việt Nam của bạn đã được thay đổi',
     hello: (n) => (n ? `Xin chào ${n},` : 'Xin chào,'),
-    intro: (e) => `Mật khẩu của tài khoản SeatRoute ${e} vừa được thay đổi.`,
+    intro: (e) => `Mật khẩu của tài khoản Nhà xe Việt Nam ${e} vừa được thay đổi.`,
     time: 'Thời gian',
     how: 'Cách thực hiện',
     device: 'Thiết bị',
@@ -99,12 +99,12 @@ const changedCopy = {
     signedOut: (reset) => (reset ? 'Tất cả thiết bị đã được đăng xuất.' : 'Các thiết bị khác đã được đăng xuất.'),
     ok: 'Nếu là bạn, bạn không cần làm gì thêm.',
     notYouTitle: 'Không phải bạn?',
-    notYou: 'Hãy mở ứng dụng SeatRoute, chọn "Quên mật khẩu" và nhập email này để lấy lại tài khoản ngay. Sau đó kiểm tra mục Thiết bị đã đăng nhập và gỡ những thiết bị lạ.',
+    notYou: 'Hãy mở ứng dụng Nhà xe Việt Nam, chọn "Quên mật khẩu" và nhập email này để lấy lại tài khoản ngay. Sau đó kiểm tra mục Thiết bị đã đăng nhập và gỡ những thiết bị lạ.',
   },
   en: {
-    subject: 'Your SeatRoute password was changed',
+    subject: 'Your Nhà xe Việt Nam password was changed',
     hello: (n) => (n ? `Hi ${n},` : 'Hi,'),
-    intro: (e) => `The password of the SeatRoute account ${e} was just changed.`,
+    intro: (e) => `The password of the Nhà xe Việt Nam account ${e} was just changed.`,
     time: 'Time',
     how: 'How',
     device: 'Device',
@@ -113,7 +113,7 @@ const changedCopy = {
     signedOut: (reset) => (reset ? 'All devices have been signed out.' : 'Your other devices have been signed out.'),
     ok: 'If this was you, there is nothing else to do.',
     notYouTitle: "Wasn't you?",
-    notYou: 'Open the SeatRoute app, tap "Forgot password" and enter this email to take your account back right away. Then check Signed-in devices and remove any you do not recognize.',
+    notYou: 'Open the Nhà xe Việt Nam app, tap "Forgot password" and enter this email to take your account back right away. Then check Signed-in devices and remove any you do not recognize.',
   },
 };
 

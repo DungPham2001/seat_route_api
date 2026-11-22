@@ -68,7 +68,7 @@ r.get('/me/complaints', C, h(async (req, res) => res.json(await social.listCompl
 r.get('/me/contact', C, h(async (req, res) => res.json(await social.listContacts(req.auth, req.query))));
 r.get('/me/data', C, h(async (req, res) => res.json(await privacy.myData(req.auth))));
 r.get('/me/export', C, h(async (req, res) => {
-  res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="seatroute-bookings.csv"' });
+  res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="nhaxe-bookings.csv"' });
   res.send(await privacy.exportMine(req.auth));
 }));
 

@@ -115,7 +115,7 @@ test('admin manages customers: create, edit, reset, lock, delete only when unuse
 
   // a customer with a booking cannot be deleted, only locked
   const w = await h.world(admin);
-  h.expectOk(await h.api.post('manage/bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, seats: ['D1'], customerAccountId: created.id, payMethod: 'cash' }, admin), 201);
+  h.expectOk(await h.api.post('manage/bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, pickup: { address: '12 Cầu Giấy, Hà Nội' }, drop: { address: '5 Lý Bôn, Thái Bình' }, seats: ['D1'], customerAccountId: created.id, payMethod: 'cash' }, admin), 201);
   const blocked = await h.api.del(`manage/customers/${created.id}`, {}, admin);
   assert.equal(blocked.body.code, 'in_use');
   const other = h.expectOk(await h.api.post('manage/customers', { displayName: 'Chưa dùng', phone: '0911000444', password: 'Chua123456' }, admin), 201);

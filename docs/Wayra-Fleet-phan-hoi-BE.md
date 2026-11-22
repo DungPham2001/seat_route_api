@@ -29,3 +29,10 @@ Trả lời `Wayra-Fleet-yeu-cau-BE.md`. Base URL giữ nguyên `https://seatrou
 1. Đăng ký hai tài khoản A, B → mỗi tài khoản tạo xe/tuyến riêng; A không thấy dữ liệu của B.
 2. Tạo cùng biển số ở A và B → cả hai đều thành công; trùng trong cùng một nhà xe → `409 duplicate`.
 3. Đăng ký tài khoản mới → mở 4 tab: không còn `403`, danh sách rỗng, chỉ có sẵn 3 mẫu sơ đồ ghế.
+
+## Cập nhật 2026-11-22: chuyến theo tên, đón trả tận nơi, bỏ văn phòng
+* **Chuyến:** `POST /manage/trips { name?, fromProvinceId, toProvinceId, durationMinutes?, date, departTime, vehicleId, basePrice }`. Không cần tuyến, không cần văn phòng. Tên chuyến hiện ở danh sách, chi tiết, đơn, dashboard (`name`; không đặt tên thì là "Từ → Đến").
+* **Đặt vé:** chọn chuyến, nhập `pickup.address` và `drop.address` (bắt buộc), ghi chú, tọa độ tùy chọn. Đổi địa chỉ bằng `PATCH /bookings/{id}/places`.
+* **Danh sách hành khách của chuyến** (`/manage/trips/{id}/manifest`) có `pickup`, `drop` từng người để tài xế đi đón.
+* Mục Văn phòng và Vùng trung chuyển không còn trong app; API cũ còn nhưng không dùng.
+* **Đặt vé lúc nào cũng được:** bỏ chốt 4 giờ trước giờ chạy và giới hạn 7 ngày. Chỉ chặn khi chuyến đã hủy / đang chạy / đã xong, hoặc chủ nhà xe đóng bán (`salesClosed`, lỗi `409 trip_not_on_sale`). Không còn `booking_closed`.

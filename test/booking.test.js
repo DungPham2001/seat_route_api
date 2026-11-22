@@ -8,7 +8,7 @@ after(h.stop);
 beforeEach(h.reset);
 
 const seatsOf = async (tripId, token) => Object.fromEntries((await h.api.get(`trips/${tripId}/seats`, token)).body.seats.map((s) => [s.seatId, s]));
-const body = (w, seatIds, extra = {}) => ({ tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, seats: seatIds, ...extra });
+const body = (w, seatIds, extra = {}) => ({ tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, pickup: { address: '12 Cầu Giấy, Hà Nội' }, drop: { address: '5 Lý Bôn, Thái Bình' }, seats: seatIds, ...extra });
 const book = async (token, w, seatIds, extra = {}) => h.expectOk(await h.api.post('bookings', body(w, seatIds, extra), token), 201);
 
 test('search, trip detail, seat map, quote', async () => {
@@ -27,7 +27,7 @@ test('search, trip detail, seat map, quote', async () => {
   assert.equal(t.frontSurcharge, 30000);
   assert.equal(t.vipSurcharge, 60000);
   const d = h.expectOk(await h.api.get(`trips/${w.trip.id}`, c.token));
-  assert.equal(d.bookingRule.leadHours, 4);
+  assert.equal(d.bookingRule.anytime, true);
   assert.equal(d.bookingRule.maxSeats, 6);
   const map = await seatsOf(w.trip.id, c.token);
   assert.equal(map.TX.state, 'unsellable');
@@ -79,25 +79,27 @@ test('booking holds the seats at once; a taken seat fails the whole request; 8 p
   assert.equal(r3.body.id, r2.body.id);
 });
 
-test('booking window: 4 hours before departure, 7 days ahead, 6 seats', async () => {
+test('bookable at any time: no lead time, no days-ahead limit; the owner can still close sales; 6 seats', async () => {
   const { token: admin } = await h.adminToken();
   const w = await h.world(admin);
   const c = await h.customer();
-  // A trip leaving in ~2 hours today is closed (also for the counter).
+  const place = { pickup: { address: '12 Cầu Giấy, Hà Nội' }, drop: { address: '5 Lý Bôn, Thái Bình' } };
+  // A trip leaving in ~2 hours today is still bookable, for customers and for the counter.
   const soon = T.toLocal(T.addMinutes(new Date(), 120));
   const near = h.expectOk(await h.api.post('manage/trips', { routeId: w.route.id, date: soon.date, departTime: soon.time, layoutId: w.layout.id, basePrice: 250000 }, admin), 201);
-  const closed = await h.api.post('bookings', { tripId: near.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, seats: ['D1'] }, c.token);
-  assert.equal(closed.status, 422);
-  assert.equal(closed.body.code, 'booking_closed');
-  const counter = await h.api.post('manage/bookings', { tripId: near.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, seats: ['D1'], guest: { name: 'Bà Lan', phone: '0988777666' }, payMethod: 'cash' }, admin);
-  assert.equal(counter.body.code, 'booking_closed');
+  assert.equal(near.status, 'open');
+  assert.equal((await h.api.post('bookings', { tripId: near.id, ...place, seats: ['D1'] }, c.token)).status, 201);
+  h.expectOk(await h.api.post('manage/bookings', { tripId: near.id, ...place, seats: ['D2'], guest: { name: 'Bà Lan', phone: '0988777666' }, payMethod: 'cash' }, admin), 201);
   const tripsToday = h.expectOk(await h.api.get(`trips?fromProvinceId=${w.hn.id}&toProvinceId=${w.tb.id}&date=${soon.date}`, c.token));
-  assert.equal(tripsToday.items.some((t) => t.id === near.id), false); // hidden from search
+  assert.equal(tripsToday.items.some((t) => t.id === near.id), true);
 
-  // 10 days ahead: customers cannot book yet.
-  const far = h.expectOk(await h.api.post('manage/trips', { routeId: w.route.id, date: T.addDays(T.today(), 10), departTime: '09:00', vehicleId: w.vehicle.id, basePrice: 250000 }, admin), 201);
-  const early = await h.api.post('bookings', { tripId: far.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, seats: ['D1'] }, c.token);
-  assert.equal(early.body.code, 'booking_closed');
+  // 40 days ahead is bookable too.
+  const far = h.expectOk(await h.api.post('manage/trips', { routeId: w.route.id, date: T.addDays(T.today(), 40), departTime: '09:00', vehicleId: w.vehicle.id, basePrice: 250000 }, admin), 201);
+  assert.equal((await h.api.post('bookings', { tripId: far.id, ...place, seats: ['D1'] }, c.token)).status, 201);
+
+  // Only the owner closing sales stops customers.
+  h.expectOk(await h.api.patch(`manage/trips/${far.id}`, { salesClosed: true }, admin));
+  assert.equal((await h.api.post('bookings', { tripId: far.id, ...place, seats: ['D2'] }, c.token)).body.code, 'trip_not_on_sale');
 
   // More than 6 seats.
   const six = await h.api.post('bookings', body(w, ['A1', 'A2', 'B1', 'B2', 'C1', 'C2', 'D1']), c.token);
@@ -225,18 +227,18 @@ test('counter booking: confirmed and paid at once, sold seats, free needs a reas
   const w = await h.world(admin);
   const c = await h.customer();
   const mine = await book(c.token, w, ['C1']);
-  const clash = await h.api.post('manage/bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, seats: ['C1', 'C2'], guest: { name: 'Bà Lan', phone: '0988777666' }, payMethod: 'cash' }, admin);
+  const clash = await h.api.post('manage/bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, pickup: { address: '12 Cầu Giấy, Hà Nội' }, drop: { address: '5 Lý Bôn, Thái Bình' }, seats: ['C1', 'C2'], guest: { name: 'Bà Lan', phone: '0988777666' }, payMethod: 'cash' }, admin);
   assert.equal(clash.status, 409);
   assert.equal(clash.body.code, 'seat_conflict');
   assert.ok(clash.body.freeSeats.includes('C2'));
-  const free = await h.api.post('manage/bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, seats: ['C2'], guest: { name: 'Bà Lan', phone: '0988777666' }, payMethod: 'free' }, admin);
+  const free = await h.api.post('manage/bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, pickup: { address: '12 Cầu Giấy, Hà Nội' }, drop: { address: '5 Lý Bôn, Thái Bình' }, seats: ['C2'], guest: { name: 'Bà Lan', phone: '0988777666' }, payMethod: 'free' }, admin);
   assert.equal(free.body.fields[0].field, 'compReason');
-  const ok = h.expectOk(await h.api.post('manage/bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, seats: [{ seatId: 'C2', passengerName: 'Bà Lan' }], guest: { name: 'Bà Lan', phone: '0988777666' }, payMethod: 'free', compReason: 'Người nhà' }, admin), 201);
+  const ok = h.expectOk(await h.api.post('manage/bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, pickup: { address: '12 Cầu Giấy, Hà Nội' }, drop: { address: '5 Lý Bôn, Thái Bình' }, seats: [{ seatId: 'C2', passengerName: 'Bà Lan' }], guest: { name: 'Bà Lan', phone: '0988777666' }, payMethod: 'free', compReason: 'Người nhà' }, admin), 201);
   assert.equal(ok.status, 'confirmed');
   assert.equal(ok.source, 'counter');
   assert.equal(ok.paid, true);
   assert.equal((await seatsOf(w.trip.id, c.token)).C2.state, 'sold');
-  const cash = h.expectOk(await h.api.post('manage/bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, seats: ['D2'], guest: { name: 'Anh Tuấn', phone: '0988111222' }, payMethod: 'cash' }, admin), 201);
+  const cash = h.expectOk(await h.api.post('manage/bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, pickup: { address: '12 Cầu Giấy, Hà Nội' }, drop: { address: '5 Lý Bôn, Thái Bình' }, seats: ['D2'], guest: { name: 'Anh Tuấn', phone: '0988111222' }, payMethod: 'cash' }, admin), 201);
   assert.equal(cash.totalAmount, 250000);
   const dash = h.expectOk(await h.api.get('manage/dashboard', admin));
   assert.equal(dash.revenue.today.amount, 250000); // free seat is not revenue

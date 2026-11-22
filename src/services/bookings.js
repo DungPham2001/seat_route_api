@@ -58,7 +58,31 @@ async function loadFor(auth, id) {
   return b;
 }
 
-const searchOf = (b, routeName) => noAccent([b.code, routeName, ...(b.seats || []).flatMap((s) => [s.passengerName, s.passengerPhone])].filter(Boolean).join(' '));
+const searchOf = (b, routeName) => noAccent([b.code, routeName, b.pickup?.address, b.drop?.address, ...(b.seats || []).flatMap((s) => [s.passengerName, s.passengerPhone])].filter(Boolean).join(' '));
+
+/**
+ * Door-to-door place: `pickup` / `drop` = { address*, note?, lat?, lng? } (flat `pickupAddress` / `dropAddress` strings are accepted too).
+ * The bus picks the passengers up and drops them at these addresses, so a new order needs both.
+ */
+function readPlace(c, body, key, { required = false } = {}) {
+  const flat = body?.[`${key}Address`] ?? body?.[`${key}AddressText`];
+  let raw = body?.[key] !== undefined && body?.[key] !== null ? body[key] : typeof flat === 'string' ? { address: flat } : undefined;
+  if (raw === undefined) {
+    if (required) c.fail(`${key}.address`, 'required');
+    return undefined;
+  }
+  if (typeof raw !== 'object' || Array.isArray(raw)) return c.fail(key, 'invalid_type');
+  const f = (k) => `${key}.${k}`;
+  if (raw.address === undefined && typeof raw.addressText === 'string') raw = { ...raw, address: raw.addressText }; // the app's name for it
+  const place = {
+    address: c.str(raw, 'address', { field: f('address'), required: true, max: 300 }),
+    note: c.str(raw, 'note', { field: f('note'), max: 300 }) || '',
+  };
+  const lat = c.num(raw, 'lat', { field: f('lat'), min: -90, max: 90 });
+  const lng = c.num(raw, 'lng', { field: f('lng'), min: -180, max: 180 });
+  if (lat !== undefined && lng !== undefined) Object.assign(place, { lat, lng });
+  return place;
+}
 
 /**
  * Seats of the request. Each item is a seat id ("A1") or { seatId, passengerName?, passengerPhone? }.
@@ -103,13 +127,13 @@ const freeSeats = async (tripId) => (await TripSeat.find({ tripId, state: 'free'
 
 function assertOffices(route, pickupOfficeId, dropOfficeId) {
   const bad = [];
-  if (!routesSvc.officeStop(route, pickupOfficeId, 'pickup')) bad.push({ field: 'pickupOfficeId', code: 'office_not_on_route' });
-  if (!routesSvc.officeStop(route, dropOfficeId, 'drop')) bad.push({ field: 'dropOfficeId', code: 'office_not_on_route' });
+  if (pickupOfficeId && !routesSvc.officeStop(route, pickupOfficeId, 'pickup')) bad.push({ field: 'pickupOfficeId', code: 'office_not_on_route' });
+  if (dropOfficeId && !routesSvc.officeStop(route, dropOfficeId, 'drop')) bad.push({ field: 'dropOfficeId', code: 'office_not_on_route' });
   if (bad.length) throw new AppError(409, 'office_not_on_route', { fields: bad });
 }
 
 async function assertOfficesOpen(pickupOfficeId, dropOfficeId) {
-  const rows = await Office.find({ _id: { $in: [pickupOfficeId, dropOfficeId] } }).lean();
+  const rows = await Office.find({ _id: { $in: [pickupOfficeId, dropOfficeId].filter(Boolean) } }).lean();
   const closed = rows.filter((o) => !o.isActive).map((o) => o._id);
   if (closed.length) throw new AppError(409, 'office_not_on_route', { fields: closed.map((id) => ({ field: id === pickupOfficeId ? 'pickupOfficeId' : 'dropOfficeId', code: 'office_closed' })) });
 }
@@ -120,18 +144,14 @@ async function policySnapshot() {
 }
 
 /**
- * Booking window (3.1): trips close `bookingLeadHours` before departure (customers AND counter), customers book at most
- * `bookDaysAhead` days ahead. Throws 422 booking_closed.
+ * Bookable at any time (no lead time, no days-ahead limit): only a cancelled / running / completed trip, or one the owner closed
+ * for customers (`salesClosed`), refuses a booking.
  */
 async function assertBookable(trip, { admin }) {
   if (['cancelled', 'completed', 'running'].includes(trip.status)) throw conflict('trip_not_on_sale', { status: trip.status });
   const sys = await settings.get('system');
-  const now = new Date();
-  if (now >= T.addMinutes(trip.departAt, -sys.bookingLeadHours * 60)) throw new AppError(422, 'booking_closed', { leadHours: sys.bookingLeadHours });
-  if (!admin) {
-    if (trip.salesClosed) throw conflict('trip_not_on_sale', { status: 'closed' });
-    if (trip.departAt > T.addMinutes(now, sys.bookDaysAhead * 1440)) throw new AppError(422, 'booking_closed', { daysAhead: sys.bookDaysAhead });
-  }
+  // No booking window: a trip can be booked at any time until the owner closes sales or the trip has run.
+  if (!admin && trip.salesClosed) throw conflict('trip_not_on_sale', { status: 'closed' });
   return sys;
 }
 
@@ -142,7 +162,7 @@ async function presentMany(rows, { admin = false } = {}) {
   const tripIds = [...new Set(rows.map((b) => b.tripId))];
   const trips = new Map((await Trip.find({ _id: { $in: tripIds } }).lean()).map((t) => [t._id, t]));
   const routes = new Map((await Route.find({ _id: { $in: [...new Set([...trips.values()].map((t) => t.routeId))] } }).lean()).map((r) => [r._id, r]));
-  const officeIds = [...new Set(rows.flatMap((b) => [b.pickupOfficeId, b.dropOfficeId]))];
+  const officeIds = [...new Set(rows.flatMap((b) => [b.pickupOfficeId, b.dropOfficeId]).filter(Boolean))];
   const offices = new Map((await Office.find({ _id: { $in: officeIds } }).lean()).map((o) => [o._id, o]));
   const vehicles = new Map((await models.Vehicle.find({ _id: { $in: [...new Set([...trips.values()].map((t) => t.vehicleId).filter(Boolean))] } }).lean()).map((v) => [v._id, v]));
   const bookingIds = rows.map((b) => b._id);
@@ -165,6 +185,7 @@ async function presentMany(rows, { admin = false } = {}) {
     const route = routes.get(trip?.routeId || b.routeId);
     const vehicle = trip?.vehicleId ? vehicles.get(trip.vehicleId) : null;
     const officeOut = (id, side) => {
+      if (!id) return null; // offices are optional: a trip is just from -> to
       const o = offices.get(id);
       const stop = routesSvc.officeStop(route, id, side);
       const at = trip ? routesSvc.officeTime(trip.departAt, stop) : null;
@@ -180,12 +201,14 @@ async function presentMany(rows, { admin = false } = {}) {
       status: b.status,
       source: b.source,
       trip: trip ? {
-        id: trip._id, departAt: iso(trip.departAt), date: local.date, departTime: local.time, tzOffset: local.offset,
+        id: trip._id, name: trip.name || route?.name || '', departAt: iso(trip.departAt), date: local.date, departTime: local.time, tzOffset: local.offset,
         arriveAt: iso(T.addMinutes(trip.departAt, trip.durationMinutes)), status: trip.status,
         route: route ? { id: route._id, name: route.name } : null,
         vehicle: vehicle ? { kindLabel: vehicle.kindLabel, name: vehicle.name || '', ...(b.status === 'confirmed' || admin ? { plateNo: vehicle.plateNo } : {}) } : null,
         updates: logs.filter((l) => l.tripId === trip._id).slice(0, 10).map((l) => ({ kind: l.kind, text: l.text, delayMinutes: l.delayMinutes, atTime: iso(l.atTime) })),
       } : null,
+      pickup: b.pickup || null,
+      drop: b.drop || null,
       pickupOffice: officeOut(b.pickupOfficeId, 'pickup'),
       dropOffice: officeOut(b.dropOfficeId, 'drop'),
       pickupShuttle: shuttleOut(b.pickupShuttle),
@@ -243,13 +266,15 @@ const presentOne = async (b, opts) => (await presentMany([b], opts))[0];
 async function readOrder(c, body, { admin = false } = {}) {
   const tripId = c.id(body, 'tripId', { required: true });
   const seats = readSeats(c, body);
-  const pickupOfficeId = c.id(body, 'pickupOfficeId', { required: true });
-  const dropOfficeId = c.id(body, 'dropOfficeId', { required: true });
+  const pickupOfficeId = c.id(body, 'pickupOfficeId') || null;
+  const dropOfficeId = c.id(body, 'dropOfficeId') || null;
+  const pickup = readPlace(c, body, 'pickup', { required: true });
+  const drop = readPlace(c, body, 'drop', { required: true });
   const pickupShuttle = pricing.readShuttle(c, body, 'pickupShuttle');
   const dropShuttle = pricing.readShuttle(c, body, 'dropShuttle');
   const promoCode = c.str(body, 'promoCode', { max: 20 }) || null;
   const note = admin ? c.str(body, 'note', { max: 500 }) || '' : '';
-  return { tripId, seats, pickupOfficeId, dropOfficeId, pickupShuttle, dropShuttle, promoCode, note };
+  return { tripId, seats, pickupOfficeId, dropOfficeId, pickup, drop, pickupShuttle, dropShuttle, promoCode, note };
 }
 
 async function prepare(input, { auth, admin = false, mode = 'select', override = null }) {
@@ -369,7 +394,7 @@ async function create(auth, body, { idempotencyKey } = {}) {
   const now = new Date();
   const doc = {
     _id: uuid(), code: await newCode('SR', Booking), tripId: trip._id, routeId: trip.routeId, departAt: trip.departAt, customerAccountId: auth.accountId, guestContactId: null,
-    source: 'app', status: 'pending', seats: bookingSeats(seats, q, auth.account.displayName, auth.account.phone), pickupOfficeId: input.pickupOfficeId, dropOfficeId: input.dropOfficeId,
+    source: 'app', status: 'pending', seats: bookingSeats(seats, q, auth.account.displayName, auth.account.phone), pickupOfficeId: input.pickupOfficeId, dropOfficeId: input.dropOfficeId, pickup: input.pickup, drop: input.drop,
     pickupShuttle, dropShuttle, amounts: q.amounts, totalAmount: q.amounts.totalAmount, promoCode: q.promo?.code || null, promotionId: q.promo?.id || null, voucherId: q.voucherId,
     note: '', internalNotes: [], payMethod: null, cancelPolicySnapshot: await policySnapshot(), notices: [], createdBy: auth.accountId, createdAt: now, updatedAt: now,
   };
@@ -841,6 +866,26 @@ async function refundBooking(auth, id, body) {
 
 // ---------- shuttle (76, 174, 215) ----------
 
+/** PATCH /v1/bookings/:id/places { pickup?, drop? } — change the door-to-door addresses until the trip departs. */
+async function updatePlaces(auth, id, body) {
+  const b = await loadFor(auth, id);
+  if (!['pending', 'confirmed'].includes(b.status)) throw conflict('invalid_status');
+  if (new Date() >= b.departAt) throw conflict('invalid_status');
+  const c = new Checker();
+  const pickup = readPlace(c, body, 'pickup');
+  const drop = readPlace(c, body, 'drop');
+  c.done();
+  if (pickup === undefined && drop === undefined) throw invalid([{ field: 'pickup', code: 'required' }]);
+  const set = { updatedAt: new Date() };
+  if (pickup) set.pickup = pickup;
+  if (drop) set.drop = drop;
+  const route = await Route.findById(b.routeId).lean();
+  set.search = searchOf({ ...b, ...set }, route?.name);
+  await Booking.updateOne({ _id: id }, { $set: set });
+  await event(b, auth, 'places_changed', { newValue: { pickup: pickup?.address, drop: drop?.address } });
+  return presentOne(await loadFor(auth, id), { admin: auth.role === 'admin' });
+}
+
 /** PATCH /v1/bookings/:id/shuttle { pickupShuttle?, dropShuttle? } — before the deadline; fee changes only while the booking is pending. */
 async function updateShuttle(auth, id, body) {
   const b = await loadFor(auth, id);
@@ -956,7 +1001,7 @@ async function adminCreate(auth, body) {
   const doc = {
     _id: uuid(), code: await newCode('SR', Booking), tripId: prep.trip._id, routeId: prep.trip.routeId, departAt: prep.trip.departAt,
     customerAccountId: input.customerAccountId, guestContactId: guest ? await upsertGuest(auth, guest) : null, source: 'counter', status: 'confirmed',
-    seats: bookingSeats(prep.seats, prep.q, name, phone), pickupOfficeId: input.pickupOfficeId, dropOfficeId: input.dropOfficeId,
+    seats: bookingSeats(prep.seats, prep.q, name, phone), pickupOfficeId: input.pickupOfficeId, dropOfficeId: input.dropOfficeId, pickup: input.pickup, drop: input.drop,
     pickupShuttle: prep.pickupShuttle, dropShuttle: prep.dropShuttle, amounts: prep.q.amounts, totalAmount: prep.q.amounts.totalAmount,
     promoCode: prep.q.promo?.code || null, promotionId: prep.q.promo?.id || null, voucherId: prep.q.voucherId, note: input.note, internalNotes: [],
     confirmedAt: now, payMethod, compReason, paidAmount: prep.q.amounts.totalAmount, paidAt: now, cancelPolicySnapshot: await policySnapshot(), notices: [], createdBy: auth.accountId, createdAt: now, updatedAt: now,
@@ -1002,13 +1047,15 @@ async function shareText(auth, id, lang = 'vi') {
   const op = await settings.get('operator');
   const en = lang === 'en';
   const lines = [
-    `${op.name || 'SeatRoute'}${op.phone ? ` - ${op.phone}` : ''}`,
+    `${op.name || 'Nhà xe Việt Nam'}${op.phone ? ` - ${op.phone}` : ''}`,
     `${en ? 'Booking code' : 'Mã đặt chỗ'}: ${b.code}`,
-    `${en ? 'Trip' : 'Chuyến'}: ${view.trip?.route?.name || ''}`,
+    `${en ? 'Trip' : 'Chuyến'}: ${view.trip?.name || view.trip?.route?.name || ''}`,
     `${en ? 'Departure' : 'Khởi hành'}: ${view.trip?.departTime} ${view.trip?.date}`,
     `${en ? 'Seats' : 'Ghế'}: ${b.seats.map((s) => `${s.label} (${s.passengerName})`).join(', ')}`,
-    `${en ? 'Pickup office' : 'Lên xe'}: ${view.pickupOffice.name}${view.pickupOffice.arriveTime ? ` - ${view.pickupOffice.arriveTime}` : ''}, ${view.pickupOffice.address || ''}`,
-    `${en ? 'Drop-off office' : 'Xuống xe'}: ${view.dropOffice.name}${view.dropOffice.arriveTime ? ` - ${view.dropOffice.arriveTime}` : ''}`,
+    ...(view.pickup ? [`${en ? 'Pick-up address' : 'Đón tại'}: ${view.pickup.address}`] : []),
+    ...(view.drop ? [`${en ? 'Drop-off address' : 'Trả tại'}: ${view.drop.address}`] : []),
+    ...(view.pickupOffice ? [`${en ? 'Pickup office' : 'Lên xe'}: ${view.pickupOffice.name}${view.pickupOffice.arriveTime ? ` - ${view.pickupOffice.arriveTime}` : ''}, ${view.pickupOffice.address || ''}`] : []),
+    ...(view.dropOffice ? [`${en ? 'Drop-off office' : 'Xuống xe'}: ${view.dropOffice.name}${view.dropOffice.arriveTime ? ` - ${view.dropOffice.arriveTime}` : ''}`] : []),
   ];
   if (view.pickupShuttle) lines.push(`${en ? 'Shuttle pickup' : 'Xe trung chuyển đón'}: ${view.pickupShuttle.plannedTime} - ${view.pickupShuttle.addressText}`);
   if (view.dropShuttle) lines.push(`${en ? 'Shuttle drop-off' : 'Xe trung chuyển trả'}: ${view.dropShuttle.plannedTime} - ${view.dropShuttle.addressText}`);
@@ -1080,13 +1127,14 @@ async function manifest(tripId) {
   const trip = await Trip.findById(tripId).lean();
   if (!trip) throw notFound();
   const rows = await Booking.find({ tripId, status: { $in: [...HELD, 'completed'] } }).sort({ createdAt: 1 }).lean();
-  const offices = new Map((await Office.find({ _id: { $in: [...new Set(rows.flatMap((b) => [b.pickupOfficeId, b.dropOfficeId]))] } }).lean()).map((o) => [o._id, o]));
+  const offices = new Map((await Office.find({ _id: { $in: [...new Set(rows.flatMap((b) => [b.pickupOfficeId, b.dropOfficeId]).filter(Boolean))] } }).lean()).map((o) => [o._id, o]));
   const items = [];
   for (const b of rows) {
     for (const s of b.seats) {
       items.push({
         bookingId: b._id, bookingCode: b.code, bookingStatus: b.status, source: b.source, bookingSeatId: s.id, seatId: s.seatId, seatLabel: s.label,
         passengerName: s.passengerName, passengerPhone: s.passengerPhone, note: b.note || '',
+        pickup: b.pickup || null, drop: b.drop || null,
         pickupOffice: offices.get(b.pickupOfficeId)?.name || '', dropOffice: offices.get(b.dropOfficeId)?.name || '',
         pickupShuttle: !!b.pickupShuttle && b.pickupShuttle.status !== 'cancelled', dropShuttle: !!b.dropShuttle && b.dropShuttle.status !== 'cancelled',
         boarding: s.boarding || 'none',
@@ -1170,7 +1218,7 @@ async function lookupPhone(query) {
 }
 
 module.exports = {
-  UNPAID,
+  UNPAID, updatePlaces,
   HELD, OPEN, newCode, load, loadFor, presentMany, presentOne, quote, create, list, get, history,
   approve, approveMany, collect, reject, assignSeats, reassign, moveToTrip, refundPreview, cancelPreview, cancelBooking, requestCancel,
   decideRequest, decideCancel, listRequests, withdrawRequest, presentRequest, adminCancel, listRefunds, recordRefund, refundBooking, presentRefund, afterRefund,

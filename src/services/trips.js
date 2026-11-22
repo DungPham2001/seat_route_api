@@ -41,8 +41,7 @@ async function seatStats(tripIds) {
 
 function saleStatus(trip, free, now = new Date()) {
   if (['cancelled', 'completed', 'running'].includes(trip.status)) return trip.status;
-  if (trip.salesClosed || (trip.salesCloseAt && now >= trip.salesCloseAt) || now >= trip.departAt) return 'closed';
-  if (trip.salesOpenAt && now < trip.salesOpenAt) return 'not_open';
+  if (trip.salesClosed) return 'closed'; // only the owner closes sales: there is no time-based booking window
   if (free <= 0) return 'sold_out';
   return 'open';
 }
@@ -76,6 +75,7 @@ async function presentMany(trips, { admin = false, expandOffices = false } = {})
     const arrive = T.addMinutes(t.departAt, t.durationMinutes || route?.durationMinutes || 0);
     const item = {
       id: t._id,
+      name: t.name || route?.name || '',
       routeId: t.routeId,
       route: route ? { id: route._id, name: route.name, fromProvinceId: route.fromProvinceId, toProvinceId: route.toProvinceId, durationMinutes: route.durationMinutes } : null,
       departAt: iso(t.departAt),
@@ -205,7 +205,7 @@ async function detail(id, { admin = false } = {}) {
     cancelPolicy: { tiers: all.cancelPolicy.tiers, cancelFee: all.cancelPolicy.cancelFee, changeAllowedHoursBefore: all.cancelPolicy.changeAllowedHoursBefore, changeFee: all.cancelPolicy.changeFee, note: all.cancelPolicy.note },
     rules: all.rules.items,
     shuttleRule: { registerHoursBefore: all.shuttle.registerHoursBefore, feeRefundable: all.shuttle.feeRefundable, note: all.shuttle.note, deadline: iso(T.addMinutes(trip.departAt, -all.shuttle.registerHoursBefore * 60)) },
-    bookingRule: { leadHours: all.system.bookingLeadHours, maxSeats: all.system.maxSeatsPerBooking, daysAhead: all.system.bookDaysAhead },
+    bookingRule: { maxSeats: all.system.maxSeatsPerBooking, anytime: true },
   };
 }
 
@@ -348,10 +348,10 @@ async function insertTrip(input, auth) {
   const now = new Date();
   const capacity = input.parcelCapacity !== undefined ? input.parcelCapacity : vehicle?.parcelMaxKg ? { maxKg: vehicle.parcelMaxKg, maxPieces: vehicle.parcelMaxPieces || 0 } : null;
   const trip = {
-    _id: uuid(), routeId: route._id, vehicleId: vehicle?._id || null, driverId: input.driverId || vehicle?.defaultDriverId || null,
+    _id: uuid(), name: input.name || '', routeId: route._id, vehicleId: vehicle?._id || null, driverId: input.driverId || vehicle?.defaultDriverId || null,
     departAt, date: input.date, departTime: input.departTime, durationMinutes: route.durationMinutes, status: 'scheduled', salesClosed: false,
-    salesOpenAt: input.salesOpenAt || T.addMinutes(departAt, -sys.bookDaysAhead * 1440),
-    salesCloseAt: input.salesCloseAt || T.addMinutes(departAt, -sys.bookingLeadHours * 60),
+    salesOpenAt: input.salesOpenAt || null,
+    salesCloseAt: input.salesCloseAt || null,
     seriesId: input.seriesId || null, basePrice: input.basePrice ?? route.basePrice ?? 0, prices: input.prices || [],
     frontSurcharge: input.frontSurcharge ?? vehicle?.frontSurcharge ?? 0, vipSurcharge: input.vipSurcharge ?? vehicle?.vipSurcharge ?? 0,
     layout: { layoutId: layout._id, name: layout.name, rows: layout.rows, cols: layout.cols },
@@ -368,7 +368,13 @@ async function insertTrip(input, auth) {
 
 async function create(auth, body) {
   const c = new Checker();
-  const routeId = c.id(body, 'routeId', { required: true });
+  // A trip is made either on an existing route (`routeId`) or just "from -> to" (`fromProvinceId` + `toProvinceId`).
+  const byProvinces = !body?.routeId && (body?.fromProvinceId || body?.toProvinceId);
+  const routeId = byProvinces ? null : c.id(body, 'routeId', { required: true });
+  const fromProvinceId = byProvinces ? c.id(body, 'fromProvinceId', { required: true }) : null;
+  const toProvinceId = byProvinces ? c.id(body, 'toProvinceId', { required: true }) : null;
+  const durationMinutes = byProvinces ? c.int(body, 'durationMinutes', { min: 10, max: 2880 }) : undefined;
+  const name = c.str(body, 'name', { max: 120 }) || '';
   const date = c.date(body, 'date', { required: true });
   const departTime = c.time(body, 'departTime', { required: true });
   const vehicleId = c.id(body, 'vehicleId');
@@ -389,11 +395,11 @@ async function create(auth, body) {
   const repeat = Array.isArray(rawRepeat) ? [...new Set(rawRepeat.map((x, i) => c.int({ v: x }, 'v', { field: `repeatWeekdays[${i}]`, max: 6 })))].filter((x) => x !== undefined) : [];
   c.done();
   if (!vehicleId && !layoutId) throw invalid([{ field: 'vehicleId', code: 'required' }]);
-  const route = await Route.findById(routeId).lean();
+  const route = byProvinces ? await routesSvc.ensure(auth, { fromProvinceId, toProvinceId, durationMinutes, basePrice }) : await Route.findById(routeId).lean();
   if (!route) throw invalid([{ field: 'routeId', code: 'not_found' }]);
   const departAt = T.localToUtc(date, departTime);
   const reason = await assertSchedulable({ vehicleId, driverId, departAt, durationMinutes: route.durationMinutes, date, force, overrideReason });
-  const base = { route, routeId, departTime, vehicleId, layoutId, driverId, basePrice, frontSurcharge, vipSurcharge, prices, parcelCapacity, driverPay, note };
+  const base = { name, route, routeId: route._id, departTime, vehicleId, layoutId, driverId, basePrice, frontSurcharge, vipSurcharge, prices, parcelCapacity, driverPay, note };
   const trip = await insertTrip({ ...base, date, salesOpenAt, salesCloseAt, overrideReason: reason }, auth);
   // "Repeat on these weekdays": the same trip on the following 4 weeks; days where the vehicle or driver clash are skipped.
   let repeatedTrips = 0;
@@ -419,6 +425,7 @@ async function update(auth, id, body) {
   const set = {};
   const date = c.date(body, 'date');
   const departTime = c.time(body, 'departTime');
+  const name = c.str(body, 'name', { max: 120 });
   const basePrice = c.money(body, 'basePrice');
   const frontSurcharge = c.money(body, 'frontSurcharge');
   const vipSurcharge = c.money(body, 'vipSurcharge');
@@ -440,10 +447,11 @@ async function update(auth, id, body) {
     if (departAt.getTime() !== trip.departAt.getTime()) {
       await assertSchedulable({ tripId: id, vehicleId: trip.vehicleId, driverId: trip.driverId, departAt, durationMinutes: trip.durationMinutes, date: nd, force, overrideReason });
       const shift = departAt - trip.departAt;
-      Object.assign(set, { date: nd, departTime: nt, departAt, salesCloseAt: new Date(trip.salesCloseAt.getTime() + shift), salesOpenAt: trip.salesOpenAt ? new Date(trip.salesOpenAt.getTime() + shift) : null });
+      Object.assign(set, { date: nd, departTime: nt, departAt, salesCloseAt: trip.salesCloseAt ? new Date(trip.salesCloseAt.getTime() + shift) : null, salesOpenAt: trip.salesOpenAt ? new Date(trip.salesOpenAt.getTime() + shift) : null });
       timeChanged = true;
     }
   }
+  if (name !== undefined) set.name = name || '';
   if (basePrice !== undefined) set.basePrice = basePrice;
   if (frontSurcharge !== undefined) set.frontSurcharge = frontSurcharge;
   if (vipSurcharge !== undefined) set.vipSurcharge = vipSurcharge;
@@ -748,6 +756,7 @@ function readSeries(c, body, partial) {
   const req = !partial;
   const set = (k, v) => { if (v !== undefined) o[k] = v; };
   set('routeId', c.id(body, 'routeId', { required: req }));
+  if (body?.name !== undefined) o.name = c.str(body, 'name', { max: 120 }) || '';
   set('vehicleId', c.id(body, 'vehicleId'));
   set('driverId', c.id(body, 'driverId'));
   const wd = c.arr(body, 'weekdays', { required: req, max: 7 });
@@ -766,7 +775,7 @@ function readSeries(c, body, partial) {
 }
 
 const presentSeries = (s) => ({
-  id: s._id, routeId: s.routeId, vehicleId: s.vehicleId, driverId: s.driverId, weekdays: s.weekdays, departTime: s.departTime,
+  id: s._id, name: s.name || '', routeId: s.routeId, vehicleId: s.vehicleId, driverId: s.driverId, weekdays: s.weekdays, departTime: s.departTime,
   startDate: s.startDate, endDate: s.endDate, basePrice: s.basePrice, prices: s.prices || [], exceptions: s.exceptions || [],
   generatedUntil: s.generatedUntil, isActive: s.isActive, note: s.note || '', createdAt: iso(s.createdAt), updatedAt: iso(s.updatedAt),
 });
@@ -787,7 +796,7 @@ async function generateSeries(series, auth = null) {
     if (ex?.type === 'skip') continue;
     const departTime = ex?.type === 'retime' ? ex.newDepartTime : series.departTime;
     if (T.localToUtc(d, departTime) <= new Date()) continue;
-    await insertTrip({ route, routeId: route._id, date: d, departTime, vehicleId: series.vehicleId, layoutId: null, driverId: series.driverId, basePrice: series.basePrice, prices: series.prices, seriesId: series._id }, auth);
+    await insertTrip({ name: series.name, route, routeId: route._id, date: d, departTime, vehicleId: series.vehicleId, layoutId: null, driverId: series.driverId, basePrice: series.basePrice, prices: series.prices, seriesId: series._id }, auth);
     created += 1;
   }
   await TripSeries.updateOne({ _id: series._id }, { $set: { generatedUntil: end } });

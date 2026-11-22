@@ -68,8 +68,8 @@ function readItems(c, body) {
   return {
     routeId: c.id(body, 'routeId', { required: true }),
     date: c.date(body, 'date', { required: true }),
-    fromOfficeId: c.id(body, 'fromOfficeId', { required: true }),
-    toOfficeId: c.id(body, 'toOfficeId', { required: true }),
+    fromOfficeId: c.id(body, 'fromOfficeId') || null,
+    toOfficeId: c.id(body, 'toOfficeId') || null,
     categoryId: c.id(body, 'categoryId'),
     descriptionText: c.str(body, 'descriptionText', { required: true, max: 500 }),
     pieceCount: c.int(body, 'pieceCount', { min: 1, max: 100 }) || 1,
@@ -118,8 +118,8 @@ async function validateItems(input) {
   const route = await Route.findById(input.routeId).lean();
   if (!route || route.status !== 'active' || !route.parcelEnabled) throw conflict('parcel_disabled');
   const bad = [];
-  if (!routesSvc.officeStop(route, input.fromOfficeId, 'pickup')) bad.push({ field: 'fromOfficeId', code: 'office_not_on_route' });
-  if (!routesSvc.officeStop(route, input.toOfficeId, 'drop')) bad.push({ field: 'toOfficeId', code: 'office_not_on_route' });
+  if (input.fromOfficeId && !routesSvc.officeStop(route, input.fromOfficeId, 'pickup')) bad.push({ field: 'fromOfficeId', code: 'office_not_on_route' });
+  if (input.toOfficeId && !routesSvc.officeStop(route, input.toOfficeId, 'drop')) bad.push({ field: 'toOfficeId', code: 'office_not_on_route' });
   if (bad.length) throw new AppError(409, 'office_not_on_route', { fields: bad });
   if (input.categoryId) {
     const cat = await ParcelCategory.findById(input.categoryId).lean();
@@ -145,7 +145,7 @@ async function quote(body) {
 
 async function presentMany(rows, { admin = false } = {}) {
   if (!rows.length) return [];
-  const officeIds = [...new Set(rows.flatMap((p) => [p.fromOfficeId, p.toOfficeId]))];
+  const officeIds = [...new Set(rows.flatMap((p) => [p.fromOfficeId, p.toOfficeId]).filter(Boolean))];
   const [offices, routes, trips, cats, events] = await Promise.all([
     Office.find({ _id: { $in: officeIds } }).lean(),
     Route.find({ _id: { $in: [...new Set(rows.map((p) => p.routeId))] } }).lean(),
@@ -157,7 +157,7 @@ async function presentMany(rows, { admin = false } = {}) {
   const rm = new Map(routes.map((r) => [r._id, r]));
   const tm = new Map(trips.map((t) => [t._id, t]));
   const cm = new Map(cats.map((x) => [x._id, x]));
-  const office = (id) => (om.get(id) ? { id, name: om.get(id).name, address: om.get(id).address, phone: om.get(id).phone || '' } : { id, name: '' });
+  const office = (id) => (!id ? null : om.get(id) ? { id, name: om.get(id).name, address: om.get(id).address, phone: om.get(id).phone || '' } : { id, name: '' });
   const MILESTONES = ['created', 'accepted', 'received', 'loaded', 'arrived', 'delivered'];
   return rows.map((p) => {
     const trip = p.tripId ? tm.get(p.tripId) : null;
@@ -298,11 +298,11 @@ async function shareText(auth, id, { handoverCode = null, lang = 'vi' } = {}) {
   const op = await settings.get('operator');
   const en = lang === 'en';
   const route = await Route.findById(p.routeId).lean();
-  const stop = routesSvc.officeStop(route, p.toOfficeId, 'drop');
+  const stop = p.toOfficeId ? routesSvc.officeStop(route, p.toOfficeId, 'drop') : null;
   const trip = p.tripId ? await Trip.findById(p.tripId).lean() : null;
   const eta = trip && stop ? T.toLocal(routesSvc.officeTime(trip.departAt, stop)) : null;
   return [
-    `${op.name || 'SeatRoute'}${op.phone ? ` - ${op.phone}` : ''}`,
+    `${op.name || 'Nhà xe Việt Nam'}${op.phone ? ` - ${op.phone}` : ''}`,
     `${en ? 'Parcel code' : 'Mã đơn gửi đồ'}: ${p.code}`,
     handoverCode ? `${en ? 'Pickup code' : 'Mã nhận hàng'}: ${handoverCode}` : null,
     `${en ? 'Receiver' : 'Người nhận'}: ${p.receiverName} - ${p.receiverPhone}`,
@@ -448,7 +448,7 @@ async function setStatus(auth, id, body) {
   // The sender pays the fee at the counter when the office takes the goods: that is the moment it counts as revenue.
   if (status === 'received' && !(p.paidAmount > 0)) await markPaid(auth, { ...p, ...set }, { method: payMethod, amount: set.fee ?? p.fee, note: 'paid at the counter' });
   const trip = p.tripId ? await Trip.findById(p.tripId).lean() : null;
-  const office = await Office.findById(p.toOfficeId).lean();
+  const office = p.toOfficeId ? await Office.findById(p.toOfficeId).lean() : null;
   const l = trip ? T.toLocal(trip.departAt) : {};
   await notify.push(p.senderAccountId, 'parcel', `parcel_${status}`, { refType: 'parcel', refId: id, params: { code: p.code, date: l.date, time: l.time, office: office?.name || '' } });
   return presentOne(await load(id), { admin: true });
@@ -481,7 +481,7 @@ async function markUnclaimed(auth, id) {
   if (p.status !== 'arrived') throw conflict('invalid_status');
   await Parcel.updateOne({ _id: id }, { $set: { unclaimed: true, updatedAt: new Date() } });
   await event(p, auth, 'unclaimed');
-  const office = await Office.findById(p.toOfficeId).lean();
+  const office = p.toOfficeId ? await Office.findById(p.toOfficeId).lean() : null;
   await notify.push(p.senderAccountId, 'parcel', 'parcel_unclaimed', { refType: 'parcel', refId: id, params: { code: p.code, office: office?.name || '' } });
   return presentOne(await load(id), { admin: true });
 }

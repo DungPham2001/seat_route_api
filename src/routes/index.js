@@ -109,6 +109,7 @@ r.get('/bookings/:id/history', h(async (req, res) => res.json(await bookings.his
 r.get('/bookings/:id/share-text', h(async (req, res) => res.json({ text: await bookings.shareText(req.auth, req.params.id, req.query.lang === 'en' ? 'en' : req.lang) })));
 r.get('/bookings/:id/messages', h(async (req, res) => res.json(await social.listMessages(req.auth, req.params.id))));
 r.post('/bookings/:id/messages', h(async (req, res) => res.status(201).json(await social.sendMessage(req.auth, req.params.id, req.body))));
+r.patch('/bookings/:id/places', h(async (req, res) => res.json(await bookings.updatePlaces(req.auth, req.params.id, req.body))));
 r.patch('/bookings/:id/shuttle', h(async (req, res) => res.json(await bookings.updateShuttle(req.auth, req.params.id, req.body))));
 r.get('/parcels', h(async (req, res) => res.json(await parcels.list(req.auth, req.query))));
 r.get('/parcels/config', h(async (_req, res) => res.json(await parcels.getConfig())));

@@ -1,6 +1,6 @@
-# SeatRoute — API
+# Nhà xe Việt Nam — API
 
-Node.js (Express 4) + MongoDB (Mongoose 8) cho app Android "SeatRoute" (đặt ghế limo liên tỉnh của một nhà xe, trả tiền tại quầy, gửi đồ theo chuyến).
+Node.js (Express 4) + MongoDB (Mongoose 8) cho app Android "Nhà xe Việt Nam" (đặt ghế limo liên tỉnh của một nhà xe, trả tiền tại quầy, gửi đồ theo chuyến).
 Production: <https://seatrouteapi.vercel.app> (`/v1/health`) · Mô tả app: [docs/SeatRoute-mo-ta.md](docs/SeatRoute-mo-ta.md) · Tài liệu ghép API cho FE: [docs/API-cho-FE.md](docs/API-cho-FE.md).
 Cùng kiến trúc với `RoomKeepAPI`: entry Vercel ở `api/`, token/phiên/quên mật khẩu giống hệt, rate limit lưu trong Mongo, test trên MongoDB in-memory.
 
@@ -21,7 +21,7 @@ npm run docs             # sinh lại mục 10 (CRUD) của docs/API-cho-FE.md s
 | Thư mục | Nội dung |
 |---|---|
 | `src/services/accounts.js`, `tokens.js` | Đăng ký (email tùy chọn, SĐT bắt buộc), đăng nhập bằng email hoặc SĐT, refresh xoay vòng + phát hiện dùng lại, quên/đặt lại/đổi mật khẩu, hồ sơ, thiết bị, quản trị viên |
-| `src/services/trips.js` | Chuyến, sơ đồ ghế (`trip_seats`), trạng thái bán (chốt 4 giờ), trùng lịch xe/tài xế, đổi xe cùng sơ đồ, hủy chuyến, chuỗi chuyến lặp, gợi ý tài xế / ghép chuyến |
+| `src/services/trips.js` | Chuyến, sơ đồ ghế (`trip_seats`), trạng thái bán (không chốt giờ), trùng lịch xe/tài xế, đổi xe cùng sơ đồ, hủy chuyến, chuỗi chuyến lặp, gợi ý tài xế / ghép chuyến |
 | `src/services/bookings.js` | Đơn đặt ghế: **giữ ghế ngay khi tạo đơn**, admin duyệt / từ chối, **thu tiền tại quầy** (`collect`), hủy/hoàn theo bản sao chính sách, đặt hộ tại quầy, trung chuyển, danh sách khách |
 | `src/services/pricing.js` | Bộ tính giá dùng chung (báo giá, đặt chỗ, đặt hộ): giá ghế + phụ thu hạng đầu/VIP, giá mùa, trung chuyển, mã giảm |
 | `src/services/parcels.js` | Gửi đồ: bảng cước, tải chuyến nguyên tử, mã nhận hàng (chỉ lưu băm), cước thu tại quầy khi nhận hàng, mốc hàng, bồi thường |

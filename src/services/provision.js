@@ -1,7 +1,7 @@
 /**
  * Starter data for a brand-new operator (nhà xe), created inside `tenant.run(operatorId, ...)` right after sign-up:
  * the operator profile, the three seat layout templates, parcel categories, prohibited items and the trip checklist.
- * Routes, offices, vehicles, staff and prices are entered by the owner.
+ * Routes, vehicles, staff and prices are entered by the owner.
  */
 const { resources } = require('../resources/defs');
 const layouts = require('./layouts');

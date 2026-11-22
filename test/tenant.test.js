@@ -48,7 +48,7 @@ test('two operators never see each other\'s data', async () => {
 test('dashboard recentBookings carries customer, passengers, route and departure', async () => {
   const a = h.expectOk(await operator(1), 201).tokens.accessToken;
   const w = await h.world(a);
-  const guest = h.expectOk(await h.api.post('manage/bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, seats: [{ seatId: 'D1', passengerName: 'Bà Lan' }], guest: { name: 'Bà Lan', phone: '0988777666' }, payMethod: 'cash' }, a), 201);
+  const guest = h.expectOk(await h.api.post('manage/bookings', { tripId: w.trip.id, pickupOfficeId: w.o1.id, dropOfficeId: w.o3.id, pickup: { address: '12 Cầu Giấy, Hà Nội' }, drop: { address: '5 Lý Bôn, Thái Bình' }, seats: [{ seatId: 'D1', passengerName: 'Bà Lan' }], guest: { name: 'Bà Lan', phone: '0988777666' }, payMethod: 'cash' }, a), 201);
   assert.equal(guest.guest.name, 'Bà Lan');
   const d = h.expectOk(await h.api.get('manage/dashboard', a));
   const r = d.recentBookings[0];
@@ -60,4 +60,32 @@ test('dashboard recentBookings carries customer, passengers, route and departure
   assert.equal(r.trip.route.name, 'Hà Nội → Thái Bình');
   const list = h.expectOk(await h.api.get('manage/bookings', a));
   assert.equal((list.items[0].customer || list.items[0].guest).phone, '0988777666');
+});
+
+test('a trip is just "from -> to" with a name; offices are not needed to book', async () => {
+  const a = h.expectOk(await operator(1), 201).tokens.accessToken;
+  const hn = await h.province('Hà Nội', 1);
+  const tb = await h.province('Thái Bình', 2);
+  const layout = h.expectOk(await h.api.get('manage/seat-layouts', a)).items.find((l) => l.name.includes('9'));
+  const v = h.expectOk(await h.api.post('manage/vehicles', { plateNo: '29B-555.55', kindLabel: 'Limousine 9 chỗ', layoutId: layout.id }, a), 201);
+  const date = h.addDays(2);
+  const trip = h.expectOk(await h.api.post('manage/trips', { name: 'Sáng Hà Nội - Thái Bình', fromProvinceId: hn.id, toProvinceId: tb.id, durationMinutes: 150, date, departTime: '06:00', vehicleId: v.id, basePrice: 250000 }, a), 201);
+  assert.equal(trip.name, 'Sáng Hà Nội - Thái Bình');
+  assert.equal(trip.route.name, 'Hà Nội → Thái Bình');
+  const again = h.expectOk(await h.api.post('manage/trips', { fromProvinceId: hn.id, toProvinceId: tb.id, date, departTime: '14:00', basePrice: 250000, layoutId: layout.id }, a), 201);
+  assert.equal(again.name, 'Hà Nội → Thái Bình'); // no name: the route name
+  assert.equal(again.routeId, trip.routeId); // same route reused
+  h.expectOk(await h.api.patch(`manage/trips/${again.id}`, { name: 'Chiều' }, a));
+  const b = h.expectOk(await h.api.post('manage/bookings', { tripId: trip.id, pickup: { address: '12 Cầu Giấy, Hà Nội', note: 'Cổng sau' }, drop: { address: '5 Lý Bôn, Thái Bình' }, seats: [{ seatId: 'D1', passengerName: 'Bà Lan' }], guest: { name: 'Bà Lan', phone: '0988777666' }, payMethod: 'cash' }, a), 201);
+  assert.equal(b.pickupOffice, null);
+  assert.equal(b.pickup.address, '12 Cầu Giấy, Hà Nội');
+  assert.equal(b.drop.address, '5 Lý Bôn, Thái Bình');
+  assert.equal((await h.api.post('manage/bookings', { tripId: trip.id, seats: ['D2'], guest: { name: 'X', phone: '0988777000' }, payMethod: 'cash' }, a)).body.fields[0].field, 'pickup.address');
+  const moved = h.expectOk(await h.api.patch(`bookings/${b.id}/places`, { drop: { address: '7 Trần Hưng Đạo, Thái Bình' } }, a));
+  assert.equal(moved.drop.address, '7 Trần Hưng Đạo, Thái Bình');
+  assert.equal(moved.pickup.address, '12 Cầu Giấy, Hà Nội');
+  const man = h.expectOk(await h.api.get(`manage/trips/${trip.id}/manifest`, a));
+  assert.equal(man.items[0].pickup.address, '12 Cầu Giấy, Hà Nội');
+  assert.equal(b.trip.name, 'Sáng Hà Nội - Thái Bình');
+  assert.equal(h.expectOk(await h.api.get('manage/dashboard', a)).recentBookings[0].routeName, 'Sáng Hà Nội - Thái Bình');
 });

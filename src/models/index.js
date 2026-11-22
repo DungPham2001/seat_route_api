@@ -112,6 +112,7 @@ const Setting = make('Setting', 'settings', {
 
 const TripSeries = make('TripSeries', 'trip_series', {
   _id: String,
+  name: { type: String, default: '' }, // copied to every trip the series generates
   routeId: { type: String, required: true },
   vehicleId: { type: String, default: null },
   driverId: { type: String, default: null },
@@ -130,6 +131,7 @@ const TripSeries = make('TripSeries', 'trip_series', {
 
 const Trip = make('Trip', 'trips', {
   _id: String,
+  name: { type: String, default: '' }, // the owner's name for the trip (shown instead of the route name when set)
   routeId: { type: String, required: true },
   vehicleId: { type: String, default: null },
   driverId: { type: String, default: null },
@@ -214,8 +216,10 @@ const Booking = make('Booking', 'bookings', {
     required: true,
   },
   seats: { type: Mixed, default: [] },
-  pickupOfficeId: { type: String, required: true },
-  dropOfficeId: { type: String, required: true },
+  pickup: { type: Mixed, default: null }, // door-to-door: { address, note, lat, lng } where the passenger is picked up
+  drop: { type: Mixed, default: null }, // ... and dropped off
+  pickupOfficeId: { type: String, default: null },
+  dropOfficeId: { type: String, default: null },
   pickupShuttle: { type: Mixed, default: null },
   dropShuttle: { type: Mixed, default: null },
   amounts: { type: Mixed, default: {} },
@@ -265,8 +269,8 @@ const Parcel = make('Parcel', 'parcels', {
   date: { type: String, required: true },
   tripId: { type: String, default: null },
   departAt: { type: Date, default: null },
-  fromOfficeId: { type: String, required: true },
-  toOfficeId: { type: String, required: true },
+  fromOfficeId: { type: String, default: null },
+  toOfficeId: { type: String, default: null },
   categoryId: { type: String, default: null },
   descriptionText: { type: String, default: '' },
   pieceCount: { type: Number, default: 1 },

@@ -40,7 +40,7 @@ module.exports = {
     secure: process.env.SMTP_SECURE === 'true',
     user: process.env.SMTP_USER || '',
     pass: process.env.SMTP_PASS || '',
-    from: process.env.SMTP_FROM || 'SeatRoute <no-reply@example.com>',
+    from: process.env.SMTP_FROM || 'Nhà xe Việt Nam <no-reply@example.com>',
   },
 
   /** Recurring trips are generated this many days ahead, never further. */

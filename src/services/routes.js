@@ -39,6 +39,26 @@ async function validateRoute(d, ctx) {
   if (d.stops) d.stops.sort((a, b) => a.sortOrder - b.sortOrder || a.offsetMinutes - b.offsetMinutes);
 }
 
+/** The route between two provinces, created on the fly (no offices, no stops) when a trip is made from "from -> to". */
+async function ensure(auth, { fromProvinceId, toProvinceId, durationMinutes, basePrice }) {
+  if (fromProvinceId === toProvinceId) throw invalid([{ field: 'toProvinceId', code: 'same_as_from' }]);
+  const [pf, pt] = await Promise.all([Province.findById(fromProvinceId).lean(), Province.findById(toProvinceId).lean()]);
+  const bad = [];
+  if (!pf) bad.push({ field: 'fromProvinceId', code: 'not_found' });
+  if (!pt) bad.push({ field: 'toProvinceId', code: 'not_found' });
+  if (bad.length) throw invalid(bad);
+  const found = await Route.findOne({ fromProvinceId, toProvinceId }).lean();
+  if (found) return found;
+  const now = new Date();
+  const doc = {
+    _id: uuid(), name: `${pf.name} → ${pt.name}`, fromProvinceId, toProvinceId, durationMinutes: durationMinutes || 180, status: 'active', basePrice: basePrice || 0,
+    stops: [], offices: [], shuttleEnabled: false, parcelEnabled: true, usefulInfo: '', note: '', search: noAccent(`${pf.name} ${pt.name}`),
+    createdBy: auth?.accountId || null, createdAt: now, updatedAt: now,
+  };
+  await Route.create(doc);
+  return doc;
+}
+
 /** POST /manage/routes/:id/duplicate { reverse } (216). Reverse swaps provinces and pickup/drop offices. */
 async function duplicate(auth, id, body) {
   const r = await Route.findById(id).lean();
@@ -115,4 +135,4 @@ async function durationStats(routeIds) {
   return new Map(rows.map((r) => [r._id, { avgActualMinutes: Math.round(r.avgMinutes), avgDepartDelayMinutes: Math.round(r.avgDepartDelay), sampleTrips: r.trips }]));
 }
 
-module.exports = { validateRoute, duplicate, officeStop, officeTime, expand, durationStats };
+module.exports = { ensure, validateRoute, duplicate, officeStop, officeTime, expand, durationStats };

@@ -19,12 +19,12 @@ const mail = `<a href="mailto:${esc(EMAIL)}">${esc(EMAIL)}</a>`;
 /** [heading, [paragraph | list items array]] */
 const content = {
   vi: {
-    title: 'Chính sách quyền riêng tư SeatRoute',
+    title: 'Chính sách quyền riêng tư Nhà xe Việt Nam',
     updated: 'Cập nhật lần cuối: 19/11/2026',
     other: '<a href="?lang=en">English</a>',
     sections: [
       ['Chúng tôi là ai', [
-        `SeatRoute là ứng dụng đặt chỗ limo liên tỉnh và gửi đồ theo chuyến của một nhà xe, do <strong>${esc(OWNER)}</strong> phát triển và chịu trách nhiệm về dữ liệu. Liên hệ: ${mail}.`,
+        `Nhà xe Việt Nam là ứng dụng đặt chỗ limo liên tỉnh và gửi đồ theo chuyến của một nhà xe, do <strong>${esc(OWNER)}</strong> phát triển và chịu trách nhiệm về dữ liệu. Liên hệ: ${mail}.`,
       ]],
       ['Dữ liệu chúng tôi lưu', [[
         '<strong>Tài khoản:</strong> email, tên, số điện thoại, ngày sinh và giới tính (nếu bạn nhập), ngôn ngữ, mật khẩu (chỉ lưu dạng đã băm bằng bcrypt), thời điểm đồng ý điều khoản.',
@@ -74,12 +74,12 @@ const content = {
     ],
   },
   en: {
-    title: 'SeatRoute privacy policy',
+    title: 'Nhà xe Việt Nam privacy policy',
     updated: 'Last updated: 2026-11-19',
     other: '<a href="?lang=vi">Tiếng Việt</a>',
     sections: [
       ['Who we are', [
-        `SeatRoute is the intercity limo seat booking and parcel app of one operator, developed by <strong>${esc(OWNER)}</strong>, who is responsible for the data. Contact: ${mail}.`,
+        `Nhà xe Việt Nam is the intercity limo seat booking and parcel app of one operator, developed by <strong>${esc(OWNER)}</strong>, who is responsible for the data. Contact: ${mail}.`,
       ]],
       ['Data we store', [[
         '<strong>Account:</strong> email, name, phone number, birth date and gender (if you enter them), language, password (only a bcrypt hash), when you accepted the terms.',

@@ -1,4 +1,4 @@
-# SeatRoute API — tài liệu ghép API cho app Android (SeatRoute / Wayra Fleet)
+# Nhà xe Việt Nam API — tài liệu ghép API cho app Android (Wayra Fleet)
 
 | | |
 |---|---|
@@ -14,6 +14,7 @@
 ### Thay đổi gần đây
 | Ngày | Thay đổi | FE cần làm |
 |---|---|---|
+| 2026-11-22 | **Đặt vé lúc nào cũng được:** bỏ chốt 4 giờ và giới hạn 7 ngày. Chỉ chặn khi chuyến đã hủy / đang chạy / đã hoàn thành, hoặc chủ nhà xe tự đóng bán (`salesClosed`) → `409 trip_not_on_sale`. Không còn lỗi `booking_closed` và trạng thái bán `not_open`; `bookingRule` = `{ maxSeats, anytime: true }`. Vẫn tối đa 6 ghế/đơn | Bỏ xử lý `booking_closed` |
 | 2026-11-22 | **Wayra Fleet — nhiều nhà xe.** `POST /auth/register` mặc định tạo **một nhà xe mới** (`role: admin`, dữ liệu rỗng, đã có sẵn 3 mẫu sơ đồ ghế, loại hàng, hàng cấm, checklist). Dữ liệu `/manage/*`, `/admin/*` tách theo nhà xe; nhà xe khác không đọc/sửa được (`404`). Đăng ký thêm `companyName`, `address`, `taxCode`; hành khách dùng `accountType: "customer"`. `dashboard.recentBookings` có thêm `customer`, `passengers`, `routeName`, `departAt` và `trip` luôn là object; `topHours` trả đủ các giờ có chuyến. `/admin/provinces` chỉ còn đọc. Xóa tài khoản chủ nhà xe cuối cùng sẽ xóa luôn dữ liệu nhà xe | Đăng ký không cần đổi body; bỏ chỗ gọi tạo/sửa tỉnh |
 | 2026-11-20 | **Đổi mô hình theo tài liệu app (`SeatRoute-tai-lieu-BE.md`)**: khách **trả tiền tại quầy**, không còn ảnh chứng từ / QR / ngân hàng. Tạo đơn **giữ ghế ngay**; nhà xe **duyệt** hoặc **từ chối**; sau khi khách trả, nhà xe bấm **xác nhận đã thu tiền** (`collect`) — doanh thu tính theo ngày thu. Xem [5](#5--đặt-ghế-và-trả-tiền-tại-quầy) và [9.4](#94--duyệt-đơn-và-thu-tiền) | Bỏ màn hình gửi ảnh / QR; trạng thái đơn mới (11.1) |
 | 2026-11-20 | Chốt đặt trước giờ chạy **4 giờ** (khách và quầy), khách đặt tối đa **7 ngày** tới, tối đa **6 ghế**/đơn. Lỗi mới `422 booking_closed`, `400 too_many_seats`, `409 seat_conflict` (thay `seat_taken`) | Xử lý các lỗi mới |
@@ -144,7 +145,7 @@ App **dịch theo `code`**, `message` chỉ là chữ dự phòng theo `Accept-L
 | 409 | `trip_not_on_sale` | Chuyến hết hạn bán / chưa mở bán (`status` trong body) |
 | 409 | `office_not_on_route`, `shuttle_unavailable`, `shuttle_deadline_passed` | Chọn lại văn phòng / khu vực; quá hạn trung chuyển → "liên hệ nhà xe" |
 | 409 | `promo_invalid`, `promo_expired`, `promo_used_up`, `promo_min_amount` (`minAmount`) | Báo ở ô mã giảm giá / điểm |
-| 422 | `booking_closed` | "Chuyến đã đóng đặt vé" (còn dưới 4 giờ trước giờ chạy, hoặc khách đặt quá 7 ngày) — body có `leadHours` hoặc `daysAhead` |
+| 422 | `booking_closed` | *(đã bỏ — đặt vé không còn giới hạn thời gian)* |
 | 409 | `invalid_status` | Thao tác không hợp lệ ở trạng thái hiện tại: tải lại đơn |
 | 409 | `cancel_not_allowed`, `pending_request_exists` | Thông báo tương ứng |
 | 409 | `review_not_allowed`, `already_reviewed`, `waitlist_exists` | Thông báo tương ứng |
@@ -358,7 +359,7 @@ Như một phần tử ở 4.1 + `operator: {name, phone, rating, reviewCount, c
 
 > **Quy tắc cốt lõi:** khách **giữ ghế ngay khi tạo đơn** (một bước, tất cả ghế hoặc không ghế nào). Nhà xe **duyệt** hoặc **từ chối**. Tiền trả **tại quầy** (tiền mặt / chuyển khoản trực tiếp), nhà xe bấm **xác nhận đã thu**. App không có màn hình thanh toán, không có ảnh chuyển khoản.
 >
-> **Chốt đặt:** trước giờ chạy **4 giờ** (khách **và** đặt hộ tại quầy) — quá hạn `422 booking_closed`. Khách đặt tối đa **7 ngày** tới và **6 ghế**/đơn. Các số này nằm ở `trip.bookingRule` (`GET /trips/{id}`: `leadHours`, `maxSeats`, `daysAhead`) và cấu hình được (9.12 `system`).
+> **Đặt lúc nào cũng được** (không chốt giờ, không giới hạn ngày). Tối đa **6 ghế**/đơn. Các số này nằm ở `trip.bookingRule` (`GET /trips/{id}`: `leadHours`, `maxSeats`, `daysAhead`) và cấu hình được (9.12 `system`).
 
 ### 5.1 🔒 Báo giá
 `POST /v1/bookings/quote` — chưa lưu gì; gọi mỗi lần khách đổi ghế / trung chuyển / mã giảm giá.
@@ -396,7 +397,7 @@ hoặc (chưa chọn ghế): `{ "tripId", "seatCount": 3, "seatClass": "standard
 * `pickupOfficeId*`, `dropOfficeId*`: văn phòng thuộc tuyến (`pickupOffices` / `dropOffices` của chuyến). Chỉ có 1 văn phòng ở phía đó thì app tự điền; có nhiều thì khách chọn.
 * **Xe trung chuyển tùy chọn**, hai chiều độc lập (đón tại nhà → văn phòng lên xe; văn phòng xuống xe → nơi khách muốn dừng): mỗi chiều `{ zoneId*, addressText*, noteText }`. Điều kiện: tuyến bật trung chuyển, khu vực thuộc đúng văn phòng đã chọn, còn trước giờ chạy ≥ `shuttle.registerHoursBefore` (mặc định 3 giờ), không thì `409 shuttle_unavailable | shuttle_deadline_passed`. Phí lưu vào đơn và cộng vào tổng, **trả tại quầy cùng tiền vé**. Không dùng GPS / bản đồ.
 * Thành công `201` → đơn `status = "pending"` (chi tiết ở 5.3), mọi ghế `state = pending` trên sơ đồ. Màn hình kết quả: "Đã đặt ghế B1, B2" + mã đơn + chuyến + văn phòng + **số tiền trả tại quầy** + "Nhà xe sẽ duyệt đơn".
-* Ghế không còn trống → `409 seat_conflict` (`takenSeats`, `freeSeats`), **không giữ / tạo gì cả**. Quá hạn / quá xa → `422 booking_closed`. Quá 6 ghế → `400 too_many_seats`. Chuyến không bán → `409 trip_not_on_sale`. Văn phòng sai/đóng → `409 office_not_on_route`.
+* Ghế không còn trống → `409 seat_conflict` (`takenSeats`, `freeSeats`), **không giữ / tạo gì cả**. Quá 6 ghế → `400 too_many_seats`. Chuyến không bán → `409 trip_not_on_sale`. Văn phòng sai/đóng → `409 office_not_on_route`.
 * Giá được **chốt tại lúc đặt** (đổi giá chuyến sau đó không ảnh hưởng đơn cũ).
 
 ### 5.3 🔒 Danh sách và chi tiết đơn
@@ -694,7 +695,7 @@ Mọi đường dẫn `/v1/manage/*`, `/v1/admin/*` chỉ dành cho `role = admi
 }
 ```
   * `guest` (khách không dùng app) **hoặc** `customerAccountId`. `seats` có thể là mảng id hoặc kèm tên từng người. `payMethod*`: `cash` | `transfer` | `free`. `free` hoặc `specialPrice` (giá riêng mỗi ghế) **bắt buộc `compReason`**; ghế miễn phí **không tính doanh thu**. Không có "chưa thu" / ghi nợ.
-  * **Cũng bị chặn 4 giờ** trước giờ chạy (`422 booking_closed`). Ghế đã có người đặt → `409 seat_conflict` (`takenSeats`, `freeSeats`) — không bao giờ lấy ghế của đơn khác.
+  * Ghế đã có người đặt → `409 seat_conflict` (`takenSeats`, `freeSeats`) — không bao giờ lấy ghế của đơn khác.
   * Gõ SĐT ở quầy: `GET /v1/admin/guests/lookup?phone=` → `{ guest: {id, name, phone, note, linkedAccountId, recentBookings}, accounts: [{id, displayName, email, phone}] }` (135).
   * Khách đăng ký sau: `POST /v1/admin/guests/{id}/link` `{ accountId }` → `{ linkedBookings, linkedParcels }` (136).
 * **Xếp / đổi ghế** `POST /v1/manage/bookings/{id}/assign-seats` (alias `/reseat`) `{ "assignments": [{ "bookingSeatId", "seatId" }], "reason" }` (169, 170) — chỉ sang ghế trống, giữ nguyên trạng thái (đơn đã duyệt → ghế `sold`); khách nhận thông báo.
@@ -1310,7 +1311,7 @@ Tab Chuyến → `GET /manage/trips?from=today` → chuyến → `manifest`, `sh
 | Đăng nhập sai | 5 lần / 15 phút / tài khoản → `429 too_many_attempts` |
 | Mã quên mật khẩu | 3 yêu cầu / giờ / email hoặc SĐT, mã hạn 30 phút |
 | Tin nhắn trong đơn | 20 / phút; liên hệ nhà xe 10 / giờ |
-| Đặt ghế | Chốt **4 giờ** trước giờ chạy (khách và quầy); khách đặt tối đa **7 ngày** tới; tối đa **6 ghế**/đơn (đều cấu hình được ở `system`) |
+| Đặt ghế | **Lúc nào cũng đặt được** (không chốt giờ, không giới hạn ngày); tối đa **6 ghế**/đơn (`system.maxSeatsPerBooking`) |
 | Body JSON | 1 MB |
 | Nhập CSV | 500 dòng |
 | Chờ duyệt | Đơn `pending` **không tự hết hạn**: ghế giữ tới khi nhà xe duyệt / từ chối / khách hủy. Quá `system.reviewDeadlineMinutes` (mặc định 30 phút) chỉ được tô `overdue` ở hàng đợi |
