@@ -112,8 +112,9 @@ test('privacy: blocked while a trip is active; deletion erases personal data', a
 test('catalog CRUD rules, CSV import preview, search, settings validation', async () => {
   const { token: admin } = await h.adminToken();
   const w = await h.world(admin);
-  const del = await h.api.del(`admin/provinces/${w.hn.id}`, {}, admin);
-  assert.equal(del.body.code, 'has_dependents');
+  const del = await h.api.del(`admin/provinces/${w.hn.id}`, {}, admin); // provinces are shared reference data
+  assert.equal(del.status, 404);
+  assert.equal((await h.api.post('admin/provinces', { name: 'Nam Định' }, admin)).status, 404);
   const wrong = await h.api.post('manage/routes', { fromProvinceId: w.hn.id, toProvinceId: w.tb.id, durationMinutes: 100, offices: [{ officeId: w.o3.id, side: 'pickup', offsetMinutes: 0 }] }, admin);
   assert.equal(wrong.body.fields[0].code, 'wrong_province');
   const rev = h.expectOk(await h.api.post(`manage/routes/${w.route.id}/duplicate`, { reverse: true }, admin), 201);

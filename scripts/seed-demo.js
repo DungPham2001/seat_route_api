@@ -43,7 +43,9 @@ async function main() {
   const adminPass = tempPassword();
   const now = new Date();
   await models.Account.deleteOne({ email: ADMIN_EMAIL });
-  await models.Account.create({ _id: uuid(), email: ADMIN_EMAIL, passwordHash: await password.hash(adminPass), displayName: 'Nguyễn Văn Hùng', role: 'admin', status: 'active', search: noAccent(`nguyen van hung ${ADMIN_EMAIL}`), createdAt: now, updatedAt: now });
+  const adminId = uuid();
+  config.defaultOperatorId = adminId; // passenger-side calls of this run belong to the seeded nhà xe
+  await models.Account.create({ _id: adminId, operatorId: adminId, email: ADMIN_EMAIL, passwordHash: await password.hash(adminPass), displayName: 'Nguyễn Văn Hùng', role: 'admin', status: 'active', search: noAccent(`nguyen van hung ${ADMIN_EMAIL}`), createdAt: now, updatedAt: now });
   const A = (await call('post', 'auth/login', null, { email: ADMIN_EMAIL, password: adminPass, deviceName: 'seed' })).tokens.accessToken;
 
   await call('put', 'admin/operator', A, { name: 'Nhà xe SeatRoute Limousine', description: 'Limousine 9 chỗ Hà Nội - Thái Bình, xuất bến đúng giờ.', phone: '0347218023', address: '1 Phạm Hùng, Hà Nội', openText: '05:00 - 21:00 hằng ngày', representativeName: 'Nguyễn Văn Hùng', licenseNoText: '0412/GPKDVT-SGTVT' });
@@ -52,10 +54,10 @@ async function main() {
 
   const provinces = await models.Province.find({}).lean();
   const find = (n) => provinces.find((p) => p.name === n);
-  const hn = find('Hà Nội') || (await call('post', 'admin/provinces', A, { name: 'Hà Nội', sortOrder: 1 }));
-  const tb = find('Thái Bình') || (await call('post', 'admin/provinces', A, { name: 'Thái Bình', sortOrder: 2 }));
-  const hnId = hn._id || hn.id;
-  const tbId = tb._id || tb.id;
+  // provinces are shared by every operator (db:init); the sample route needs these two
+  const province = async (name, sortOrder) => (find(name) || (await models.Province.create({ _id: uuid(), name, nameNoAccent: noAccent(name), sortOrder, isActive: true, search: noAccent(name), createdAt: now, updatedAt: now })))._id;
+  const hnId = await province('Hà Nội', 1);
+  const tbId = await province('Thái Bình', 2);
   const o = {
     md: await call('post', 'manage/offices', A, { provinceId: hnId, name: 'VP Mỹ Đình', address: '20 Phạm Hùng, Nam Từ Liêm', phone: '0241111111', openText: '05:00 - 21:00' }),
     gb: await call('post', 'manage/offices', A, { provinceId: hnId, name: 'VP Giáp Bát', address: '897 Giải Phóng, Hoàng Mai', phone: '0242222222', openText: '05:00 - 21:00' }),
@@ -91,7 +93,7 @@ async function main() {
   for (const [name, isProhibited] of [['Quần áo, đồ dùng', false], ['Thực phẩm khô', false], ['Giấy tờ', false], ['Chất cháy nổ', true], ['Hàng cấm theo pháp luật', true]]) await call('post', 'admin/parcel-categories', A, { name, isProhibited });
   await call('post', 'admin/checklist-items', A, { title: 'Kiểm tra xe, lốp, phanh' });
   await call('post', 'admin/checklist-items', A, { title: 'Đối chiếu danh sách khách với tài xế' });
-  for (const [q, a] of [['Chuyển khoản thế nào?', 'Sau khi tạo đơn, quét mã QR hoặc chuyển đúng số tài khoản, số tiền và nội dung là mã đơn, rồi gửi ảnh chuyển khoản trong app.'], ['Vì sao nên gửi ảnh sớm?', 'Ghế thuộc về người gửi ảnh chuyển khoản thành công sớm nhất.']]) {
+  for (const [q, a] of [['Thanh toán thế nào?', 'Sau khi nhà xe duyệt đơn, bạn thanh toán trực tiếp tại quầy (tiền mặt hoặc chuyển khoản) trước giờ xe chạy.'], ['Vì sao đơn chưa được duyệt?', 'Đơn giữ ghế ngay khi tạo và chờ nhà xe duyệt; bạn sẽ nhận thông báo khi có kết quả.']]) {
     await call('post', 'admin/faq', A, { language: 'vi', category: 'payment', question: q, answer: a });
   }
   await call('post', 'admin/promotions', A, { code: 'TET2027', title: 'Giảm 50.000đ dịp Tết', kind: 'amount', value: 50000, minAmount: 200000, perUserLimit: 1 });
@@ -100,10 +102,10 @@ async function main() {
 
   const customerPass = tempPassword();
   await models.Account.deleteOne({ email: CUSTOMER_EMAIL });
-  const C = (await call('post', 'auth/register', null, { email: CUSTOMER_EMAIL, password: customerPass, displayName: 'Nguyễn Minh Quân', phone: '0909000111', acceptTerms: true })).tokens.accessToken;
+  const C = (await call('post', 'auth/register', null, { email: CUSTOMER_EMAIL, password: customerPass, displayName: 'Nguyễn Minh Quân', phone: '0909000111', acceptTerms: true, accountType: 'customer' })).tokens.accessToken;
   const customer2Pass = tempPassword();
   await models.Account.deleteOne({ email: CUSTOMER2_EMAIL });
-  const C2 = (await call('post', 'auth/register', null, { email: CUSTOMER2_EMAIL, password: customer2Pass, displayName: 'Trần Thị Bình', phone: '0909000222', acceptTerms: true })).tokens.accessToken;
+  const C2 = (await call('post', 'auth/register', null, { email: CUSTOMER2_EMAIL, password: customer2Pass, displayName: 'Trần Thị Bình', phone: '0909000222', acceptTerms: true, accountType: 'customer' })).tokens.accessToken;
 
   await sampleOrders({ A, C, C2, route, back, o, start });
 

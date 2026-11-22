@@ -1,6 +1,7 @@
 /**
  * Adds an admin from the server (e.g. when every admin lost access):
  *   npm run admin:create -- admin2@yourdomain.vn "Tên quản trị"
+ * A new admin becomes the owner of a new, empty nhà xe; set OPERATOR_ID=<id> to add it to an existing one.
  * Prints a random temporary password once; the account must change it at the first sign-in.
  */
 const mongoose = require('mongoose');
@@ -22,7 +23,8 @@ async function main() {
     await models.Account.updateOne({ _id: existing._id }, { $set: { passwordHash: await password.hash(plain), status: 'active', updatedAt: now } });
     await models.Session.updateMany({ accountId: existing._id, revokedAt: null }, { $set: { revokedAt: now, revokeReason: 'password_reset' } });
   } else {
-    await models.Account.create({ _id: uuid(), email: email.toLowerCase(), passwordHash: await password.hash(plain), displayName: name, role: 'admin', preferredLanguage: 'vi', status: 'active', search: noAccent(`${name} ${email}`), passwordChangedAt: now, createdAt: now, updatedAt: now });
+    const id = uuid();
+    await models.Account.create({ _id: id, operatorId: process.env.OPERATOR_ID || id, email: email.toLowerCase(), passwordHash: await password.hash(plain), displayName: name, role: 'admin', preferredLanguage: 'vi', status: 'active', search: noAccent(`${name} ${email}`), passwordChangedAt: now, createdAt: now, updatedAt: now });
   }
   console.log(`${existing ? 'Password reset' : 'Admin created'}: ${email.toLowerCase()}\ntemporary password: ${plain}`);
   await mongoose.disconnect();

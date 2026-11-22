@@ -33,8 +33,9 @@ async function main() {
     const email = (process.env.DEFAULT_ADMIN_EMAIL || 'admin@seatroute.local').toLowerCase();
     const plain = tempPassword();
     const now = new Date();
+    const id = uuid();
     await models.Account.create({
-      _id: uuid(), email, passwordHash: await password.hash(plain), displayName: 'Quản trị viên', role: 'admin', preferredLanguage: 'vi', status: 'active',
+      _id: id, operatorId: id, email, passwordHash: await password.hash(plain), displayName: 'Quản trị viên', role: 'admin', preferredLanguage: 'vi', status: 'active',
       search: noAccent(`quan tri vien ${email}`), passwordChangedAt: now, createdAt: now, updatedAt: now,
     });
     console.log('\nDefault admin created (shown only once, change it in the app):');

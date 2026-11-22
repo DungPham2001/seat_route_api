@@ -39,6 +39,7 @@ async function stop() {
 async function reset() {
   for (const c of await mongoose.connection.db.collections()) await c.deleteMany({});
   settings.clearCache();
+  require('../src/middleware/tenant').clearCache();
 }
 
 const bearer = (token) => (token ? { Authorization: `Bearer ${token}` } : {});
@@ -60,8 +61,9 @@ const expectOk = (res, status = 200) => {
 /** An admin as created by db:init, signed in. */
 async function adminToken() {
   const email = 'admin@seatroute.test';
+  const id = uuid();
   await models.Account.create({
-    _id: uuid(), email, passwordHash: await password.hash(PASSWORD), displayName: 'Admin', role: 'admin', preferredLanguage: 'vi',
+    _id: id, operatorId: id, email, passwordHash: await password.hash(PASSWORD), displayName: 'Admin', role: 'admin', preferredLanguage: 'vi',
     status: 'active', search: 'admin', createdAt: new Date(), updatedAt: new Date(),
   });
   const login = expectOk(await api.post('auth/login', { email, password: PASSWORD, deviceName: 'Admin phone' }));
@@ -69,8 +71,14 @@ async function adminToken() {
 }
 
 async function customer(email = 'khach@example.com', name = 'Nguyễn Văn An', phone = '0901234567') {
-  const res = expectOk(await api.post('auth/register', { email, password: PASSWORD, displayName: name, phone, acceptTerms: true, deviceName: 'Pixel 8' }), 201);
+  const res = expectOk(await api.post('auth/register', { email, password: PASSWORD, displayName: name, phone, acceptTerms: true, accountType: 'customer', deviceName: 'Pixel 8' }), 201);
   return { token: res.tokens.accessToken, body: res };
+}
+
+/** Provinces are shared reference data (seeded by db:init), not created through the API. */
+async function province(name, sortOrder) {
+  const doc = await models.Province.findOne({ name }).lean() || (await models.Province.create({ _id: uuid(), name, nameNoAccent: noAccent(name), sortOrder, isActive: true, search: noAccent(name), createdAt: new Date(), updatedAt: new Date() })).toObject();
+  return { ...doc, id: doc._id };
 }
 
 /**
@@ -79,8 +87,8 @@ async function customer(email = 'khach@example.com', name = 'Nguyễn Văn An', 
  */
 async function world(admin) {
   expectOk(await api.put('admin/operator', { name: 'Nhà xe Test', phone: '0241234567', address: 'Hà Nội' }, admin));
-  const hn = expectOk(await api.post('admin/provinces', { name: 'Hà Nội', sortOrder: 1 }, admin), 201);
-  const tb = expectOk(await api.post('admin/provinces', { name: 'Thái Bình', sortOrder: 2 }, admin), 201);
+  const hn = await province('Hà Nội', 1);
+  const tb = await province('Thái Bình', 2);
   const o1 = expectOk(await api.post('manage/offices', { provinceId: hn.id, name: 'VP Mỹ Đình', address: '1 Mỹ Đình', phone: '0241111111' }, admin), 201);
   const o2 = expectOk(await api.post('manage/offices', { provinceId: hn.id, name: 'VP Giáp Bát', address: '2 Giải Phóng', phone: '0242222222' }, admin), 201);
   const o3 = expectOk(await api.post('manage/offices', { provinceId: tb.id, name: 'VP TP Thái Bình', address: '3 Lý Bôn', phone: '0227333333' }, admin), 201);

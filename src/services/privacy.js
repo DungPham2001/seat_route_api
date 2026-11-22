@@ -6,15 +6,20 @@
  * labels) because the operator must reconcile revenue; names, phones and addresses in them are erased.
  * Blocked while a trip is not completed or a refund is pending (112).
  */
+const mongoose = require('mongoose');
 const models = require('../models');
 const { conflict } = require('../lib/errors');
 const { withTx } = require('../lib/tx');
 const { iso } = require('../lib/util');
 const T = require('../lib/time');
+const tenant = require('../lib/tenant');
 
 const M = models;
 
-async function assertDeletable(accountId) {
+/** A passenger's data can sit in several operators: privacy actions look at all of them. */
+const assertDeletable = (accountId) => tenant.unscoped(() => checkDeletable(accountId));
+
+async function checkDeletable(accountId) {
   const now = new Date();
   const [activeBookings, activeParcels, refunds] = await Promise.all([
     M.Booking.countDocuments({ customerAccountId: accountId, status: { $in: ['pending', 'confirmed', 'cancel_requested'] }, departAt: { $gt: T.addMinutes(now, -1440) } }),
@@ -24,7 +29,9 @@ async function assertDeletable(accountId) {
   if (activeBookings || activeParcels || refunds) throw conflict('has_active_orders', { activeBookings, activeParcels, pendingRefunds: refunds });
 }
 
-async function purgeCustomer(account, { force = false } = {}) {
+const purgeCustomer = (account, opts) => tenant.unscoped(() => purge(account, opts));
+
+async function purge(account, { force = false } = {}) {
   const id = account._id;
   if (!force) await assertDeletable(id);
   await withTx(async (session) => {
@@ -50,6 +57,17 @@ async function purgeCustomer(account, { force = false } = {}) {
     await M.Session.deleteMany({ accountId: id }, o);
     await M.PasswordReset.deleteMany({ accountId: id }, o);
     await M.Account.deleteOne({ _id: id }, o);
+  });
+}
+
+/** Removes everything an operator owns (used when its last owner deletes the account). */
+async function purgeOperator(operatorId) {
+  await tenant.unscoped(async () => {
+    for (const name of mongoose.modelNames()) {
+      const Model = mongoose.model(name);
+      if (Model.schema.path('operatorId') && !['Account'].includes(name)) await Model.deleteMany({ operatorId });
+    }
+    await M.Account.deleteMany({ operatorId });
   });
 }
 
@@ -89,4 +107,4 @@ async function exportMine(auth) {
   );
 }
 
-module.exports = { purgeCustomer, assertDeletable, myData, exportMine, toCsv };
+module.exports = { purgeOperator, purgeCustomer, assertDeletable, myData, exportMine, toCsv };

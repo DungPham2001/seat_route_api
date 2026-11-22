@@ -18,7 +18,7 @@ const add = (key, def) => {
 // ---------- geography & offices (207, 213, 219) ----------
 
 add('provinces', {
-  model: 'Province', collection: 'provinces', path: '/admin/provinces', role: 'admin',
+  model: 'Province', collection: 'provinces', path: '/admin/provinces', role: 'admin', global: true,
   fields: {
     name: { type: 'string', required: true, max: 80 },
     nameNoAccent: { type: 'string', readOnly: true },

@@ -5,6 +5,7 @@
  */
 const config = require('../config');
 const models = require('../models');
+const tenant = require('../lib/tenant');
 const { withTx } = require('../lib/tx');
 const { Checker } = require('../lib/validate');
 const { AppError, unauthorized, forbidden, conflict, notFound, invalid } = require('../lib/errors');
@@ -65,7 +66,11 @@ async function newReferralCode() {
 
 // ---------- register / login ----------
 
-/** POST /v1/auth/register (customers only). Idempotent by `idempotencyKey` / Idempotency-Key. */
+/**
+ * POST /v1/auth/register. By default it signs up a new operator (nhà xe): an `admin` account that owns its own,
+ * empty set of vehicles, routes, trips and orders (`operatorId` = its own id). `accountType: "customer"` signs up
+ * a passenger instead. Idempotent by `idempotencyKey` / Idempotency-Key.
+ */
 async function register(body, { lang, idempotencyKey: headerKey }) {
   const c = new Checker();
   const email = c.email(body, 'email') || null; // optional: a customer can sign up with just a phone number
@@ -76,7 +81,10 @@ async function register(body, { lang, idempotencyKey: headerKey }) {
   if (rawPhone && !phone) c.fail('phone', 'invalid_format');
   const preferredLanguage = c.oneOf(body, 'preferredLanguage', LANGS, { def: lang });
   if (body?.acceptTerms !== true) c.fail('acceptTerms', 'terms_required');
-  const referralCode = c.str(body, 'referralCode', { max: 20 });
+  const accountType = c.oneOf(body, 'accountType', ['operator', 'customer'], { def: 'operator' });
+  const isOperator = accountType === 'operator';
+  const referralCode = isOperator ? null : c.str(body, 'referralCode', { max: 20 });
+  const extra = isOperator ? { companyName: c.str(body, 'companyName', { max: 120 }), address: c.str(body, 'address', { max: 300 }), taxCode: c.str(body, 'taxCode', { max: 30 }) } : {};
   const device = deviceOf(c, body);
   const idemKey = c.str(body, 'idempotencyKey', { max: 100 }) || (typeof headerKey === 'string' ? headerKey.slice(0, 100) : null);
   c.done();
@@ -100,10 +108,11 @@ async function register(body, { lang, idempotencyKey: headerKey }) {
   const passwordHash = await password.hash(plain);
   const now = new Date();
   const doc = {
-    _id: uuid(), email, passwordHash, displayName, phone, role: 'customer', preferredLanguage, status: 'active',
-    avatarColor: COLORS[Math.floor(Math.random() * COLORS.length)], referralCode: await newReferralCode(),
+    _id: uuid(), email, passwordHash, displayName, phone, role: isOperator ? 'admin' : 'customer', preferredLanguage, status: 'active',
+    avatarColor: COLORS[Math.floor(Math.random() * COLORS.length)], referralCode: isOperator ? null : await newReferralCode(),
     termsAcceptedAt: now, passwordChangedAt: now, createdAt: now, updatedAt: now,
   };
+  if (isOperator) doc.operatorId = doc._id;
   doc.search = searchOf(doc);
   try {
     await withTx(async (session) => {
@@ -121,7 +130,8 @@ async function register(body, { lang, idempotencyKey: headerKey }) {
     if (err.code === 11000) throw dupError(err);
     throw err;
   }
-  await require('./loyalty').welcomeVoucher(doc._id).catch(() => {}); // CHAOBAN (10%) in the new wallet
+  if (isOperator) await tenant.run(doc._id, () => require('./provision').operator(doc, extra)).catch(() => {});
+  else await require('./loyalty').welcomeVoucher(doc._id).catch(() => {}); // CHAOBAN (10%) in the new wallet
   return { status: 201, body: { ...(await profile(doc)), tokens: await tokens.openSession(doc, device) } };
 }
 
@@ -210,7 +220,7 @@ async function forgot(body, { lang }) {
   const account = await Account.findOne(loginFilter(id)).lean();
   if (!account) return out;
   if (!account.email) {
-    await models.ContactMessage.create({ _id: uuid(), accountId: account._id, subject: 'password_reset', text: `Yêu cầu cấp lại mật khẩu cho SĐT ${account.phone}. Hãy gọi lại để xác minh và cấp mật khẩu tạm.`, status: 'open', createdAt: new Date() });
+    await tenant.run(account.operatorId || (await require('../middleware/tenant').defaultOperatorId()), () => models.ContactMessage.create({ _id: uuid(), accountId: account._id, subject: 'password_reset', text: `Yêu cầu cấp lại mật khẩu cho SĐT ${account.phone}. Hãy gọi lại để xác minh và cấp mật khẩu tạm.`, status: 'open', createdAt: new Date() }));
     return out;
   }
   const code = humanCode(8);
@@ -317,11 +327,12 @@ async function updateMe(auth, body) {
 async function deleteAccount(account, plain) {
   await confirmPassword(account, plain);
   if (account.role === 'admin') {
-    const others = await Account.countDocuments({ role: 'admin', _id: { $ne: account._id }, status: 'active' });
-    if (!others) throw conflict('last_admin');
+    const op = account.operatorId || account._id;
+    const others = await Account.countDocuments({ role: 'admin', operatorId: op, _id: { $ne: account._id } });
     await Session.deleteMany({ accountId: account._id });
     await PasswordReset.deleteMany({ accountId: account._id });
     await Account.deleteOne({ _id: account._id });
+    if (!others) await require('./privacy').purgeOperator(op); // the owner leaves: the whole nhà xe goes with the account
     return;
   }
   await require('./privacy').purgeCustomer(account);
@@ -354,8 +365,10 @@ async function removeDevice(auth, id) {
 
 const tempPassword = () => `Tp${randomToken(9).replace(/[-_]/g, 'x')}7a`; // always upper + lower + digit
 
-async function listAdmins() {
-  const rows = await Account.find({ role: 'admin' }).sort({ createdAt: 1 }).lean();
+const myOperator = (auth) => auth.account.operatorId || auth.accountId;
+
+async function listAdmins(auth) {
+  const rows = await Account.find({ role: 'admin', $or: [{ operatorId: myOperator(auth) }, { _id: myOperator(auth) }] }).sort({ createdAt: 1 }).lean();
   return { items: rows.map((a) => ({ ...presentAccount(a), lastLoginAt: iso(a.lastLoginAt) })) };
 }
 
@@ -372,7 +385,7 @@ async function createAdmin(auth, body) {
   const plain = tempPassword();
   const now = new Date();
   const doc = {
-    _id: uuid(), email, passwordHash: await password.hash(plain), displayName, phone: adminPhone, role: 'admin',
+    _id: uuid(), email, passwordHash: await password.hash(plain), displayName, phone: adminPhone, role: 'admin', operatorId: myOperator(auth),
     preferredLanguage: 'vi', status: 'active', passwordChangedAt: now, createdAt: now, updatedAt: now,
   };
   doc.search = searchOf(doc);
@@ -382,10 +395,10 @@ async function createAdmin(auth, body) {
 }
 
 async function revokeAdmin(auth, id) {
-  const target = await Account.findOne({ _id: id, role: 'admin' }).lean();
+  const target = await Account.findOne({ _id: id, role: 'admin', operatorId: myOperator(auth) }).lean();
   if (!target) throw notFound();
   if (target._id === auth.accountId) throw forbidden('forbidden');
-  const others = await Account.countDocuments({ role: 'admin', _id: { $ne: target._id }, status: 'active' });
+  const others = await Account.countDocuments({ role: 'admin', operatorId: myOperator(auth), _id: { $ne: target._id }, status: 'active' });
   if (!others) throw conflict('last_admin');
   await Session.deleteMany({ accountId: target._id });
   await Account.deleteOne({ _id: target._id });
@@ -393,7 +406,7 @@ async function revokeAdmin(auth, id) {
 }
 
 async function resetAdminPassword(auth, id) {
-  const target = await Account.findOne({ _id: id, role: 'admin' }).lean();
+  const target = await Account.findOne({ _id: id, role: 'admin', operatorId: myOperator(auth) }).lean();
   if (!target) throw notFound();
   const plain = tempPassword();
   await Account.updateOne({ _id: id }, { $set: { passwordHash: await password.hash(plain), passwordChangedAt: new Date(), updatedAt: new Date() } });

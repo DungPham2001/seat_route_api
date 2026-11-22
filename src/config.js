@@ -12,6 +12,8 @@ module.exports = {
   env,
   isTest: env === 'test',
   port: num(process.env.PORT, 4000),
+  /** Operator used by passenger-side calls that name none (default: the oldest operator). */
+  defaultOperatorId: process.env.DEFAULT_OPERATOR_ID || '',
   mongoUri: process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/seatroute',
   corsOrigins: (process.env.CORS_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean),
   /** The operator's fixed timezone: "today", trip local times, reports. */

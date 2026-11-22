@@ -7,6 +7,8 @@ const mongoose = require('mongoose');
 const config = require('../config');
 const { asyncHandler, AppError } = require('../lib/errors');
 const { authenticate } = require('../middleware/auth');
+const { scopeToOperator } = require('../middleware/tenant');
+const tenant = require('../lib/tenant');
 const { iso, safeEqual } = require('../lib/util');
 const accounts = require('../services/accounts');
 const notify = require('../services/notify');
@@ -19,6 +21,7 @@ const parcels = require('../services/parcels');
 const jobs = require('../services/jobs');
 
 const r = express.Router();
+r.use(scopeToOperator); // anonymous calls: the default operator (signed-in ones are re-scoped below)
 const h = asyncHandler;
 const noContent = (fn) => h(async (req, res) => {
   await fn(req, res);
@@ -56,12 +59,12 @@ r.get('/jobs/run', h(async (req, res) => {
     const m = /^Bearer\s+(\S+)$/i.exec(req.get('authorization') || '');
     if (!m || !safeEqual(m[1], config.cronSecret)) throw new AppError(401, 'unauthorized');
   }
-  res.json(await jobs.run());
+  res.json(await tenant.unscoped(() => jobs.run()));
 }));
 
 // ---------- signed in (both roles) ----------
 
-r.use(authenticate);
+r.use(authenticate, scopeToOperator);
 
 r.post('/auth/change-password', h(async (req, res) => res.json(await accounts.changePassword(req.auth, req.body, { lang: req.lang }))));
 r.get('/me', h(async (req, res) => res.json(await accounts.profile(req.auth.account))));

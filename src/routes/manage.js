@@ -164,7 +164,7 @@ r.patch('/admin/settings/:key', json((req) => settings.update(req.params.key, re
 r.put('/admin/operator', json((req) => settings.update('operator', req.body, req.auth.accountId)));
 r.put('/admin/cancel-policy', json((req) => settings.update('cancelPolicy', req.body, req.auth.accountId)));
 // ---------- admins (256, 260) ----------
-r.get('/admin/admins', json(() => accounts.listAdmins()));
+r.get('/admin/admins', json((req) => accounts.listAdmins(req.auth)));
 r.post('/admin/admins', json((req) => accounts.createAdmin(req.auth, req.body), 201));
 r.post('/admin/admins/:id/revoke', noContent((req) => accounts.revokeAdmin(req.auth, req.params.id)));
 r.delete('/admin/admins/:id', noContent((req) => accounts.revokeAdmin(req.auth, req.params.id)));

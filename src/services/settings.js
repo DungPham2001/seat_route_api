@@ -4,6 +4,7 @@
  */
 const config = require('../config');
 const { Setting } = require('../models');
+const tenant = require('../lib/tenant');
 const { Checker } = require('../lib/validate');
 const { invalid, notFound } = require('../lib/errors');
 const { iso } = require('../lib/util');
@@ -13,7 +14,7 @@ const D = config.defaults;
 const DEFAULTS = {
   operator: {
     name: '', description: '', phone: '', email: '', address: '', openText: '',
-    representativeName: '', licenseNoText: '', website: '',
+    representativeName: '', licenseNoText: '', taxCode: '', website: '',
   },
   cancelPolicy: {
     tiers: [{ hoursBefore: 24, refundPercent: 100 }, { hoursBefore: 6, refundPercent: 70 }, { hoursBefore: 2, refundPercent: 50 }, { hoursBefore: 0, refundPercent: 0 }],
@@ -73,7 +74,7 @@ const KEYS = Object.keys(DEFAULTS);
 const V = {
   operator(c, b) {
     const o = {};
-    for (const [k, max] of [['name', 120], ['description', 3000], ['address', 300], ['openText', 200], ['representativeName', 80], ['licenseNoText', 80], ['website', 200]]) {
+    for (const [k, max] of [['name', 120], ['description', 3000], ['address', 300], ['openText', 200], ['representativeName', 80], ['licenseNoText', 80], ['taxCode', 30], ['website', 200]]) {
       if (b[k] !== undefined) o[k] = c.str(b, k, { max }) || '';
     }
     if (b.phone !== undefined) o.phone = c.phone(b, 'phone') || '';
@@ -166,16 +167,21 @@ const V = {
 
 // ---------- read / write ----------
 
-let cache = { at: 0, values: null };
+const cache = new Map(); // operatorId -> { at, values }
 const TTL = 5000;
 
+/** Each operator has its own settings: document `_id` is "<operatorId>:<key>" (plain "<key>" without an operator). */
+const idOf = (key) => (tenant.current() ? `${tenant.current()}:${key}` : key);
+
 async function all() {
-  if (cache.values && Date.now() - cache.at < TTL) return cache.values;
-  const rows = await Setting.find({ _id: { $in: KEYS } }).lean();
+  const op = tenant.current() || '';
+  const hit = cache.get(op);
+  if (hit && Date.now() - hit.at < TTL) return hit.values;
+  const rows = await Setting.find({ _id: { $in: KEYS.map(idOf) } }).lean();
   const stored = Object.fromEntries(rows.map((r) => [r._id, r]));
   const values = {};
-  for (const k of KEYS) values[k] = { ...DEFAULTS[k], ...(stored[k]?.value || {}), updatedAt: iso(stored[k]?.updatedAt) };
-  cache = { at: Date.now(), values };
+  for (const k of KEYS) values[k] = { ...DEFAULTS[k], ...(stored[idOf(k)]?.value || {}), updatedAt: iso(stored[idOf(k)]?.updatedAt) };
+  cache.set(op, { at: Date.now(), values });
   return values;
 }
 
@@ -187,13 +193,13 @@ async function update(key, body, accountId) {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) throw invalid([{ field: 'body', code: 'invalid_type' }]);
   const patch = V[key](c, body);
   c.done();
-  const current = await Setting.findById(key).lean();
+  const current = await Setting.findById(idOf(key)).lean();
   const value = { ...(current?.value || {}), ...patch };
-  await Setting.updateOne({ _id: key }, { $set: { value, updatedBy: accountId, updatedAt: new Date() } }, { upsert: true });
-  cache = { at: 0, values: null };
+  await Setting.updateOne({ _id: idOf(key) }, { $set: { value, updatedBy: accountId, updatedAt: new Date() } }, { upsert: true });
+  cache.delete(tenant.current() || '');
   return get(key);
 }
 
-const clearCache = () => { cache = { at: 0, values: null }; };
+const clearCache = () => cache.clear();
 
 module.exports = { get, all, update, KEYS, DEFAULTS, clearCache };

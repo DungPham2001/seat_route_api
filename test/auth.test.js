@@ -7,7 +7,7 @@ after(h.stop);
 beforeEach(h.reset);
 
 test('register, login, refresh rotation, reuse detection, logout', async () => {
-  const reg = await h.api.post('auth/register', { email: 'An@Example.com', password: h.PASSWORD, displayName: 'An', phone: '+84 901 234 567', acceptTerms: true });
+  const reg = await h.api.post('auth/register', { email: 'An@Example.com', password: h.PASSWORD, displayName: 'An', phone: '+84 901 234 567', acceptTerms: true, accountType: 'customer' });
   assert.equal(reg.status, 201);
   assert.equal(reg.body.account.email, 'an@example.com');
   assert.equal(reg.body.account.phone, '0901234567');
@@ -15,7 +15,7 @@ test('register, login, refresh rotation, reuse detection, logout', async () => {
   assert.ok(reg.body.account.referralCode);
   assert.ok(reg.body.member);
 
-  const dup = await h.api.post('auth/register', { email: 'an@example.com', password: h.PASSWORD, displayName: 'An', phone: '0901234567', acceptTerms: true });
+  const dup = await h.api.post('auth/register', { email: 'an@example.com', password: h.PASSWORD, displayName: 'An', phone: '0901234567', acceptTerms: true, accountType: 'customer' });
   assert.equal(dup.status, 409);
   assert.equal(dup.body.code, 'email_taken');
 
@@ -66,22 +66,22 @@ test('no forced password change; roles are checked on the server', async () => {
 });
 
 test('register: email is optional, phone is required, password needs upper + lower + digit', async () => {
-  const noEmail = await h.api.post('auth/register', { password: h.PASSWORD, displayName: 'Chỉ SĐT', phone: '0912345678', acceptTerms: true });
+  const noEmail = await h.api.post('auth/register', { password: h.PASSWORD, displayName: 'Chỉ SĐT', phone: '0912345678', acceptTerms: true, accountType: 'customer' });
   assert.equal(noEmail.status, 201);
   assert.equal(noEmail.body.account.email, null);
   assert.equal((await h.api.post('auth/login', { login: '0912345678', password: h.PASSWORD })).status, 200);
-  assert.equal((await h.api.post('auth/register', { email: 'x@x.vn', password: h.PASSWORD, displayName: 'X', acceptTerms: true })).body.fields[0].field, 'phone');
+  assert.equal((await h.api.post('auth/register', { email: 'x@x.vn', password: h.PASSWORD, displayName: 'X', acceptTerms: true, accountType: 'customer' })).body.fields[0].field, 'phone');
   for (const bad of ['matkhau123', 'MATKHAU123', 'Matkhauabc', 'Mk1']) {
     const r = await h.api.post('auth/register', { email: `${bad}@x.vn`, password: bad, displayName: 'X', phone: '0933000111', acceptTerms: true });
     assert.equal(r.body.fields[0].code, 'weak_password', bad);
   }
   // two accounts without an email do not collide on the empty email
-  assert.equal((await h.api.post('auth/register', { password: h.PASSWORD, displayName: 'Hai', phone: '0912345679', acceptTerms: true })).status, 201);
+  assert.equal((await h.api.post('auth/register', { password: h.PASSWORD, displayName: 'Hai', phone: '0912345679', acceptTerms: true, accountType: 'customer' })).status, 201);
 });
 
 test('forgot password: a phone-only account leaves a message for the admin, who sets a temporary password', async () => {
   const { token: admin } = await h.adminToken();
-  const reg = h.expectOk(await h.api.post('auth/register', { password: h.PASSWORD, displayName: 'Chỉ SĐT', phone: '0912345678', acceptTerms: true }), 201);
+  const reg = h.expectOk(await h.api.post('auth/register', { password: h.PASSWORD, displayName: 'Chỉ SĐT', phone: '0912345678', acceptTerms: true, accountType: 'customer' }), 201);
   const f = await h.api.post('auth/forgot', { login: '0912345678' });
   assert.equal(f.status, 202);
   assert.equal(f.body.devToken, undefined); // no email to send a code to
@@ -123,7 +123,7 @@ test('admin manages customers: create, edit, reset, lock, delete only when unuse
   assert.equal((await h.api.get(`manage/customers/${other.id}`, admin)).status, 404);
 });
 
-test('admin management: temp password, last admin cannot leave', async () => {
+test('admin management: temp password; the last owner deleting the account removes the nhà xe', async () => {
   const { token } = await h.adminToken();
   const add = await h.api.post('admin/admins', { email: 'ops@x.vn', displayName: 'Ops' }, token);
   assert.equal(add.status, 201);
@@ -133,8 +133,9 @@ test('admin management: temp password, last admin cannot leave', async () => {
   assert.equal((await h.api.post(`admin/admins/${add.body.account.id}/revoke`, {}, token)).status, 204);
   assert.equal((await h.api.get('me', l2.body.tokens.accessToken)).body.code, 'session_revoked');
   const del = await h.api.del('me', { password: h.PASSWORD }, token);
-  assert.equal(del.status, 409);
-  assert.equal(del.body.code, 'last_admin');
+  assert.equal(del.status, 204);
+  assert.equal((await h.api.post('auth/login', { email: 'admin@seatroute.test', password: h.PASSWORD })).status, 401);
+  assert.equal(await h.models.Setting.countDocuments({}), 0);
 });
 
 test('sign in with email or phone number; one phone per account', async () => {
@@ -151,7 +152,7 @@ test('sign in with email or phone number; one phone per account', async () => {
   assert.equal(badFormat.status, 400);
   assert.equal(badFormat.body.fields[0].field, 'login');
 
-  const dup = await h.api.post('auth/register', { email: 'other@example.com', password: h.PASSWORD, displayName: 'B', phone: '+84901234567', acceptTerms: true });
+  const dup = await h.api.post('auth/register', { email: 'other@example.com', password: h.PASSWORD, displayName: 'B', phone: '+84901234567', acceptTerms: true, accountType: 'customer' });
   assert.equal(dup.status, 409);
   assert.equal(dup.body.code, 'phone_taken');
   const b = await h.customer('b@example.com', 'B', '0902000222');

@@ -37,7 +37,8 @@ function buildModel(def) {
   shape.createdAt = { type: Date, default: Date.now };
   shape.updatedAt = { type: Date, default: Date.now };
   const s = new Schema(shape, { collection: def.collection, versionKey: false, minimize: false });
-  for (const u of def.unique || []) s.index(Object.fromEntries(u.map((k) => [k, 1])), { unique: true });
+  if (!def.global) s.plugin(require('../lib/tenantPlugin'));
+  for (const u of def.unique || []) s.index(Object.fromEntries([...(def.global ? [] : ['operatorId']), ...u].map((k) => [k, 1])), { unique: true });
   for (const [spec, opts] of def.indexes || []) s.index(spec, opts || {});
   if (def.owner) s.index({ [def.owner]: 1, createdAt: -1 });
   if (def.parent) s.index({ [def.parent.field]: 1, createdAt: -1 });
@@ -239,6 +240,8 @@ function router(def, model, present) {
     if (def.decorate) await def.decorate([item], req);
     res.json(item);
   }));
+
+  if (def.global) return r; // shared reference data (provinces): read-only through the API
 
   r.post('/', h(async (req, res) => {
     const data = await clean(def, req.body, { partial: false });

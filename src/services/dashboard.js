@@ -167,7 +167,12 @@ async function dashboard(query) {
       unassigned: tripItems.filter((t) => t.needsVehicle || t.needsDriver).length,
       items: tripItems.map((t) => ({ id: t.id, route: t.route?.name, departTime: t.departTime, status: t.status, tripStatus: t.tripStatus, seats: t.seats, fillPercent: t.fillPercent, needsVehicle: t.needsVehicle, needsDriver: t.needsDriver })),
     },
-    recentBookings: (await require('./bookings').presentMany(recent, { admin: true })).map((b) => ({ id: b.id, code: b.code, status: b.status, source: b.source, totalAmount: b.totalAmount, trip: b.trip, createdAt: b.createdAt })),
+    recentBookings: (await require('./bookings').presentMany(recent, { admin: true })).map((b) => ({
+      id: b.id, code: b.code, status: b.status, source: b.source, totalAmount: b.totalAmount, paid: b.paid, createdAt: b.createdAt,
+      customer: b.customer ? { displayName: b.customer.displayName, phone: b.customer.phone } : b.guest ? { displayName: b.guest.name, phone: b.guest.phone } : null,
+      passengers: (b.seats || []).map((x) => ({ name: x.passengerName || '', seat: x.label })),
+      routeName: b.trip?.route?.name || '', departAt: b.trip?.departAt || null, trip: b.trip,
+    })),
     toCollect: await unpaidSummary(),
     longestWaiting: waiting.map((b) => ({ bookingId: b._id, code: b.code, amount: b.totalAmount, createdAt: iso(b.createdAt), waitingMinutes: Math.round((Date.now() - b.createdAt) / 60000) })),
     topRoutes: top.routes,
@@ -175,6 +180,17 @@ async function dashboard(query) {
     alerts: await alerts(),
     updatedAt: iso(new Date()),
   };
+}
+
+/** Every departure hour that has a trip in the period, with its seats sold (0 when none), best-selling first. */
+async function allHours(sold, start, end, tz) {
+  const trips = await Trip.aggregate([
+    { $match: { departAt: { $gte: start, $lt: end }, status: { $ne: 'cancelled' } } },
+    { $group: { _id: { $hour: { date: '$departAt', timezone: tz } } } },
+  ]);
+  const map = new Map(trips.map((t) => [t._id, 0]));
+  for (const h of sold) map.set(h._id, h.seats);
+  return [...map].map(([hour, seats]) => ({ hour, seats })).sort((a, b) => b.seats - a.seats || a.hour - b.hour);
 }
 
 /** Best-selling routes and departure hours by seats sold in a period (126, 245). */
@@ -191,7 +207,7 @@ async function topRoutesAndHours(start, end) {
   const names = new Map((await Route.find({ _id: { $in: rows[0].routes.map((r) => r._id) } }).select('name').lean()).map((r) => [r._id, r.name]));
   return {
     routes: rows[0].routes.map((r) => ({ routeId: r._id, name: names.get(r._id) || '', seats: r.seats, bookings: r.bookings, revenue: r.revenue })),
-    hours: rows[0].hours.map((h) => ({ hour: h._id, seats: h.seats })),
+    hours: await allHours(rows[0].hours, start, end, tz),
   };
 }
 

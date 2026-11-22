@@ -888,7 +888,7 @@ async function getSeries(id) {
 async function extendAllSeries() {
   const rows = await TripSeries.find({ isActive: true }).lean();
   let created = 0;
-  for (const s of rows) created += (await generateSeries(s)).created;
+  for (const s of rows) created += (await require('../lib/tenant').run(s.operatorId, () => generateSeries(s))).created;
   return { series: rows.length, created };
 }
 

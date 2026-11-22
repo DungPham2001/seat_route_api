@@ -1,4 +1,4 @@
-# SeatRoute API — tài liệu ghép API cho app Android
+# SeatRoute API — tài liệu ghép API cho app Android (SeatRoute / Wayra Fleet)
 
 | | |
 |---|---|
@@ -8,11 +8,13 @@
 | **Chính sách quyền riêng tư** (khai trên Google Play) | `https://seatrouteapi.vercel.app/privacy` (`?lang=en`) |
 | **Định dạng** | Chỉ HTTPS, JSON UTF-8. Thời điểm ISO 8601 UTC (`2026-11-20T00:30:00Z`), ngày địa phương `yyyy-MM-dd`, giờ địa phương `HH:mm`. Tiền là **số nguyên đồng** |
 | **Đăng nhập** | `Authorization: Bearer <accessToken>` ở mọi endpoint có 🔒 (gần như tất cả) |
-| **Vai trò** | `customer` (khách hàng, tự đăng ký) và `admin` (quản trị viên). Máy chủ kiểm tra vai trò ở **mọi** endpoint |
+| **Vai trò** | `admin` (chủ nhà xe / quản lý — **mặc định khi đăng ký**) và `customer` (hành khách, đăng ký với `accountType:"customer"`). Máy chủ kiểm tra vai trò ở **mọi** endpoint |
+| **Nhiều nhà xe** | Mỗi tài khoản đăng ký là **một nhà xe riêng** (xe, tuyến, văn phòng, chuyến, đơn, cài đặt tách hẳn). Nhà xe lấy ngầm từ token, app **không** gửi tham số nhà xe. Danh mục tỉnh/thành dùng chung (chỉ đọc) |
 
 ### Thay đổi gần đây
 | Ngày | Thay đổi | FE cần làm |
 |---|---|---|
+| 2026-11-22 | **Wayra Fleet — nhiều nhà xe.** `POST /auth/register` mặc định tạo **một nhà xe mới** (`role: admin`, dữ liệu rỗng, đã có sẵn 3 mẫu sơ đồ ghế, loại hàng, hàng cấm, checklist). Dữ liệu `/manage/*`, `/admin/*` tách theo nhà xe; nhà xe khác không đọc/sửa được (`404`). Đăng ký thêm `companyName`, `address`, `taxCode`; hành khách dùng `accountType: "customer"`. `dashboard.recentBookings` có thêm `customer`, `passengers`, `routeName`, `departAt` và `trip` luôn là object; `topHours` trả đủ các giờ có chuyến. `/admin/provinces` chỉ còn đọc. Xóa tài khoản chủ nhà xe cuối cùng sẽ xóa luôn dữ liệu nhà xe | Đăng ký không cần đổi body; bỏ chỗ gọi tạo/sửa tỉnh |
 | 2026-11-20 | **Đổi mô hình theo tài liệu app (`SeatRoute-tai-lieu-BE.md`)**: khách **trả tiền tại quầy**, không còn ảnh chứng từ / QR / ngân hàng. Tạo đơn **giữ ghế ngay**; nhà xe **duyệt** hoặc **từ chối**; sau khi khách trả, nhà xe bấm **xác nhận đã thu tiền** (`collect`) — doanh thu tính theo ngày thu. Xem [5](#5--đặt-ghế-và-trả-tiền-tại-quầy) và [9.4](#94--duyệt-đơn-và-thu-tiền) | Bỏ màn hình gửi ảnh / QR; trạng thái đơn mới (11.1) |
 | 2026-11-20 | Chốt đặt trước giờ chạy **4 giờ** (khách và quầy), khách đặt tối đa **7 ngày** tới, tối đa **6 ghế**/đơn. Lỗi mới `422 booking_closed`, `400 too_many_seats`, `409 seat_conflict` (thay `seat_taken`) | Xử lý các lỗi mới |
 | 2026-11-20 | Tài khoản: **email tùy chọn**, SĐT bắt buộc; mật khẩu cần chữ hoa + chữ thường + số; **không ép đổi mật khẩu** (bỏ `mustChangePassword` / `password_change_required`); quên mật khẩu chỉ có SĐT → tin vào hộp thư liên hệ của admin | Cập nhật form đăng ký / quên mật khẩu |
@@ -181,7 +183,10 @@ Danh sách trả `{ "items": [...], "nextCursor": "MjA" | null, "total": 42 }`. 
 { "status": "ok", "apiVersion": "1.0.0", "minAppVersion": "1.0.0", "latestAppVersion": "1.0.0", "serverTime": "2026-11-19T02:46:21Z", "timezone": "Asia/Ho_Chi_Minh" }
 ```
 
-### 2.2 `POST /v1/auth/register` → `201` (chỉ khách hàng)
+### 2.2 `POST /v1/auth/register` → `201` (tạo nhà xe mới, hoặc hành khách)
+* **Mặc định tạo chủ nhà xe**: `role: "admin"`, đăng nhập xong dùng được ngay `/manage/*`, `/admin/*` trên dữ liệu **riêng** của mình (rỗng). Không có bước duyệt tài khoản.
+* Thêm tùy chọn cho nhà xe: `companyName` (≤120, mặc định = `displayName`), `address` (≤300), `taxCode` (≤30). Chúng nằm trong `GET /operator` → `profile`.
+* Muốn tạo **hành khách** (app khách cũ): gửi `"accountType": "customer"`; khi đó mới có `referralCode`, ví mã `CHAOBAN`, `member`.
 ```json
 { "phone": "0901234567", "email": "an@example.com", "password": "Matkhau123", "displayName": "Nguyễn Văn An",
   "acceptTerms": true, "preferredLanguage": "vi", "referralCode": "U4MTLA", "deviceName": "Pixel 8", "deviceId": "<id cài đặt>" }
@@ -637,11 +642,12 @@ Mọi đường dẫn `/v1/manage/*`, `/v1/admin/*` chỉ dành cho `role = admi
   "inbox": { "…": "như 9.3" },
   "parcels": { "createdToday", "pending", "waitingPickupAtOffice", "revenueInRange" },
   "tripsToday": { "count", "passengers", "fillPercent", "unassigned", "items": [{ "id", "route", "departTime", "status", "tripStatus", "seats", "fillPercent", "needsVehicle", "needsDriver" }] },
-  "recentBookings": [{ "id", "code", "status", "source", "totalAmount", "trip", "createdAt" }],
+  "recentBookings": [{ "id", "code", "status", "source", "totalAmount", "paid", "createdAt",
+    "customer": { "displayName", "phone" }, "passengers": [{ "name", "seat" }], "routeName": "Hà Nội → Sa Pa", "departAt", "trip": { "id", "route": { "id", "name" }, "departAt" } }],
   "toCollect": { "count": 3, "amount": 1590000, "tripsWithin24h": 1, "amountWithin24h": 530000 },
   "longestWaiting": [{ "bookingId", "code", "amount", "createdAt", "waitingMinutes" }],
   "topRoutes": [{ "routeId", "name", "seats", "bookings", "revenue" }],
-  "topHours": [{ "hour": 7, "seats": 12 }],
+  "topHours": [{ "hour": 7, "seats": 12 }], // đủ mọi giờ có chuyến trong kỳ (giờ chưa bán được = seats 0)
   "alerts": [{ "kind": "vehicle_doc|maintenance_due|license_expiring|low_fill|trip_unassigned|unpaid_soon", "severity": "high|medium|low", "…": "…" }],
   "updatedAt": "…"
 }

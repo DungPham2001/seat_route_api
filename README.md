@@ -47,3 +47,9 @@ npm run docs             # sinh lại mục 10 (CRUD) của docs/API-cho-FE.md s
 ## Deploy (Vercel)
 
 `vercel.json` chuyển mọi request vào `api/index.js` (region `sin1`, cron `/v1/jobs/run` 19:00 UTC = 02:00 giờ VN: sinh chuyến lặp, nhắc hàng chưa nhận, dọn phiên cũ). Đặt `MONGODB_URI`, `JWT_SECRET`, `CRON_SECRET`, `PUBLIC_BASE_URL=https://seatrouteapi.vercel.app`, SMTP; chạy `npm run db:init` một lần với đúng URI. Nếu database đã có dữ liệu của bản cũ (ảnh chứng từ) thì chạy thêm `node scripts/migrate-v2.js --yes` **một lần** trước khi `db:init` + `seed:demo` (xóa dữ liệu mẫu cũ).
+
+## Nhiều nhà xe (Wayra Fleet)
+
+Mỗi tài khoản đăng ký (`POST /v1/auth/register`) là một nhà xe riêng. Dữ liệu tách theo `operatorId` (= id chủ nhà xe) bằng `src/lib/tenant.js` + `src/lib/tenantPlugin.js`: mọi truy vấn và bản ghi mới của các collection nghiệp vụ tự gắn `operatorId` của request, nên service không thể đọc/ghi dữ liệu nhà xe khác. Tỉnh/thành, tài khoản, phiên, thông báo dùng chung. Hành khách/khách vãng lai chạy trên nhà xe mặc định (`DEFAULT_OPERATOR_ID`, mặc định là nhà xe lâu đời nhất) hoặc header `X-Operator-Id`.
+
+Database cũ (một nhà xe): chạy **một lần** `node scripts/migrate-tenant.js <email-chủ> --yes` (gán dữ liệu hiện có cho chủ đó, đổi tên cài đặt thành `<id>:<key>`), rồi `npm run db:init` để dựng lại index duy nhất theo từng nhà xe.

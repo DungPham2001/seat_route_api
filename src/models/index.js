@@ -1,5 +1,6 @@
 /**
- * MongoDB collections of the `seatroute` database (one operator: no businessId anywhere).
+ * MongoDB collections of the `seatroute` database. Multi-tenant: every operator-owned document carries `operatorId`
+ * (added by lib/tenantPlugin.js from the request's operator).
  * Primary keys are UUID strings, money is whole dong (integers), instants are UTC Dates and local dates are
  * "yyyy-MM-dd" strings in the operator's timezone. Simple catalog tables (offices, vehicles, routes, staff...)
  * are declared in `src/resources/defs.js` and merged into this module's exports.
@@ -9,16 +10,20 @@ const { Schema } = mongoose;
 
 const Mixed = Schema.Types.Mixed;
 
+/** Collections shared by every operator: logins, sessions, idempotency keys, per-account notifications. */
+const SHARED = new Set(['accounts', 'sessions', 'password_resets', 'receipts', 'rate_hits', 'notifications']);
+
 const make = (name, collection, def, indexes = []) => {
   const s = new Schema(def, { collection, versionKey: false, minimize: false });
   for (const [spec, opts] of indexes) s.index(spec, opts);
+  if (!SHARED.has(collection)) s.plugin(require('../lib/tenantPlugin'));
   return mongoose.model(name, s);
 };
 const stamps = { createdAt: { type: Date, default: Date.now }, updatedAt: { type: Date, default: Date.now } };
 
 // ---------- accounts & sessions ----------
 
-/** One login. role: customer (self sign-up) | admin (created on the server or by another admin). */
+/** One login. role: admin (an operator's owner/staff; `POST /auth/register` default) | customer (a passenger). */
 const Account = make('Account', 'accounts', {
   _id: String,
   email: { type: String, default: null }, // optional; unique when present
@@ -26,6 +31,7 @@ const Account = make('Account', 'accounts', {
   displayName: { type: String, required: true },
   phone: { type: String, default: null }, // normalized 0xxxxxxxxx; required for customers, a sign-in identifier
   role: { type: String, enum: ['customer', 'admin'], required: true },
+  operatorId: { type: String, default: null }, // admin: the operator (nhà xe) it owns; customer created by an operator: that operator
   preferredLanguage: { type: String, enum: ['vi', 'en'], default: 'vi' },
   status: { type: String, enum: ['active', 'suspended'], default: 'active' },
   suspendReason: { type: String, default: null },
@@ -44,6 +50,7 @@ const Account = make('Account', 'accounts', {
   [{ email: 1 }, { unique: true, partialFilterExpression: { email: { $type: 'string' } } }],
   [{ referralCode: 1 }, { unique: true, partialFilterExpression: { referralCode: { $type: 'string' } } }],
   [{ role: 1, createdAt: -1 }, {}],
+  [{ operatorId: 1, role: 1 }, {}],
   [{ phone: 1 }, { unique: true, partialFilterExpression: { phone: { $type: 'string' } } }], // phone is a sign-in identifier
 ]);
 

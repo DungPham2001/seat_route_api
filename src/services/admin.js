@@ -8,6 +8,7 @@ const { notFound, invalid, conflict } = require('../lib/errors');
 const password = require('../lib/password');
 const { uuid, iso, noAccent, normalizePhone } = require('../lib/util');
 const T = require('../lib/time');
+const tenant = require('../lib/tenant');
 const tokens = require('./tokens');
 const notify = require('./notify');
 const audit = require('./audit');
@@ -17,6 +18,15 @@ const { paging, page } = require('../resources/engine');
 const { Account, Booking, Parcel, Trip, TripLog, Office, Route, Province, GuestContact, StaffMember, Vehicle, SeatLayout, Setting } = models;
 
 // ---------- customers ----------
+
+/** Customers of this operator: the ones it created, plus everyone who booked or sent a parcel with it. */
+async function customerScope() {
+  const op = tenant.current();
+  if (!op) return { role: 'customer' };
+  const [a, b, c] = await Promise.all([Booking.distinct('customerAccountId'), Parcel.distinct('senderAccountId'), models.ContactMessage.distinct('accountId')]);
+  const ids = [...new Set([...a, ...b, ...c].filter(Boolean))];
+  return { role: 'customer', $or: [{ operatorId: op }, { _id: { $in: ids } }] };
+}
 
 async function customerStats(ids) {
   const rows = await Booking.aggregate([
@@ -40,7 +50,7 @@ const presentCustomer = (a, s) => ({
 
 /** GET /admin/customers?q&status&kind=new|returning */
 async function listCustomers(query) {
-  const filter = { role: 'customer' };
+  const filter = await customerScope();
   if (query.status) filter.status = String(query.status);
   if (query.q) filter.search = { $regex: noAccent(query.q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') };
   const p = paging(query, 30);
@@ -52,7 +62,7 @@ async function listCustomers(query) {
 }
 
 async function getCustomer(id) {
-  const a = await Account.findOne({ _id: id, role: 'customer' }).lean();
+  const a = await Account.findOne({ _id: id, ...(await customerScope()) }).lean();
   if (!a) throw notFound();
   const stats = await customerStats([id]);
   const recent = await Booking.find({ customerAccountId: id }).sort({ createdAt: -1 }).limit(20).lean();
@@ -82,7 +92,7 @@ async function createCustomer(auth, body) {
   await accounts.assertPhoneFree(phone);
   const now = new Date();
   const doc = {
-    _id: uuid(), email, passwordHash: await password.hash(plain), displayName, phone, role: 'customer', preferredLanguage: 'vi', status: 'active',
+    _id: uuid(), email, passwordHash: await password.hash(plain), displayName, phone, role: 'customer', operatorId: tenant.current(), preferredLanguage: 'vi', status: 'active',
     avatarColor: accounts.COLORS[Math.floor(Math.random() * accounts.COLORS.length)], referralCode: await accounts.newReferralCode(), termsAcceptedAt: now, passwordChangedAt: now, createdAt: now, updatedAt: now,
   };
   doc.search = accounts.searchOf(doc);
@@ -95,7 +105,7 @@ async function createCustomer(auth, body) {
 /** PATCH /manage/customers/:id — name, phone, email, note; `password` resets it (empty = keep). Signs the customer out on a reset. */
 async function updateCustomer(auth, id, body) {
   const accounts = require('./accounts');
-  const a = await Account.findOne({ _id: id, role: 'customer' }).lean();
+  const a = await Account.findOne({ _id: id, ...(await customerScope()) }).lean();
   if (!a) throw notFound();
   const c = new Checker();
   const set = {};
@@ -123,7 +133,7 @@ async function updateCustomer(auth, id, body) {
 /** POST /manage/customers/:id/reset-password { password? } — a temporary password when none is given (shown once). */
 async function resetCustomerPassword(auth, id, body) {
   const accounts = require('./accounts');
-  const a = await Account.findOne({ _id: id, role: 'customer' }).lean();
+  const a = await Account.findOne({ _id: id, ...(await customerScope()) }).lean();
   if (!a) throw notFound();
   const c = new Checker();
   const given = typeof body?.password === 'string' && body.password !== '' ? c.password(body, 'password') : null;
@@ -138,7 +148,7 @@ async function resetCustomerPassword(auth, id, body) {
 
 /** DELETE /manage/customers/:id — only when the customer has no booking or parcel at all (otherwise lock the account). */
 async function deleteCustomer(auth, id) {
-  const a = await Account.findOne({ _id: id, role: 'customer' }).lean();
+  const a = await Account.findOne({ _id: id, ...(await customerScope()) }).lean();
   if (!a) throw notFound();
   const [bookings, parcels] = await Promise.all([Booking.countDocuments({ customerAccountId: id }), Parcel.countDocuments({ senderAccountId: id })]);
   if (bookings || parcels) throw conflict('in_use', { bookings, parcels, hint: 'lock_instead' });
@@ -148,8 +158,8 @@ async function deleteCustomer(auth, id) {
 
 /** Suspend / unsuspend a customer (226) with a reason; sessions are revoked at once. */
 async function setSuspended(auth, id, { suspended, reason }) {
-  const a = await Account.findOne({ _id: id }).lean();
-  if (!a || a.role !== 'customer') throw notFound();
+  const a = await Account.findOne({ _id: id, ...(await customerScope()) }).lean();
+  if (!a) throw notFound();
   await Account.updateOne({ _id: id }, { $set: { status: suspended ? 'suspended' : 'active', suspendReason: suspended ? reason : null, updatedAt: new Date() } });
   if (suspended) await tokens.revoke({ accountId: id }, 'suspended');
   await audit.log(auth, 'account', id, suspended ? 'suspended' : 'unsuspended', reason || '');
@@ -171,7 +181,7 @@ async function search(query) {
   const rx = { $regex: q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') };
   const [bookings, customers, parcels, guests, routes] = await Promise.all([
     Booking.find({ search: rx }).sort({ createdAt: -1 }).limit(10).lean(),
-    Account.find({ role: 'customer', search: rx }).limit(10).lean(),
+    (async () => Account.find({ ...(await customerScope()), search: rx }).limit(10).lean())(),
     Parcel.find({ search: rx }).sort({ createdAt: -1 }).limit(10).lean(),
     GuestContact.find({ search: rx }).limit(10).lean(),
     Route.find({ search: rx }).select('_id').lean(),
@@ -297,7 +307,7 @@ async function onboarding(auth) {
     { key: 'drivers', done: drivers > 0 },
     { key: 'routes', done: routes > 0 },
     { key: 'first_trip', done: trips > 0 },
-    { key: 'cancel_policy', done: marks.has('cancel_policy') || !!(await Setting.exists({ _id: 'cancelPolicy' })) },
+    { key: 'cancel_policy', done: marks.has('cancel_policy') || !!(await Setting.exists({ _id: tenant.current() ? `${tenant.current()}:cancelPolicy` : 'cancelPolicy' })) },
   ].map((s) => ({ ...s, done: s.done || marks.has(s.key) }));
   return { steps, completed: steps.filter((s) => s.done).length, total: steps.length };
 }
@@ -412,7 +422,7 @@ async function resetChecklist(auth, tripId) {
 }
 
 module.exports = {
-  createCustomer, updateCustomer, resetCustomerPassword, deleteCustomer,
+  customerScope, createCustomer, updateCustomer, resetCustomerPassword, deleteCustomer,
   listCustomers, getCustomer, setSuspended, suspend, search, parseCsv, importCsv, onboarding, markOnboarding,
   addLog, listLogs, broadcast, driverText, checkItem, resetChecklist,
 };

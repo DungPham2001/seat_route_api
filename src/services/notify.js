@@ -61,7 +61,7 @@ async function officeClosed(office) {
 /** Announcement / promo fan-out to every active customer (the app hides the groups the customer turned off). */
 async function announcement(doc) {
   const promo = doc.kind === 'promo';
-  const rows = await Account.find({ role: 'customer', status: 'active' }).select('_id').lean();
+  const rows = await Account.find({ ...(await require('./admin').customerScope()), status: 'active' }).select('_id').lean();
   return pushMany(rows.map((a) => a._id), promo ? 'promo' : 'system', 'announcement', { refType: 'announcement', refId: doc._id, params: { title: doc.title, body: doc.body } });
 }
 
